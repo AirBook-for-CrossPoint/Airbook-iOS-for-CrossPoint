@@ -200,7 +200,10 @@ struct FirmwareUpdateView: View {
                 Rectangle()
                     .fill(Color.paperInk)
                     .frame(width: geo.size.width * CGFloat(fraction.clamped()))
-                    .animation(.easeInOut(duration: 0.2), value: fraction)
+                    // Linear-1s interpolation matches the device's OTA_PROGRESS
+                    // cadence (one notify per ~32 KB ≈ ~1 s). The bar visibly
+                    // slides between updates instead of step-jumping.
+                    .animation(.linear(duration: 1.0), value: fraction)
             }
         }
         .frame(height: 6)

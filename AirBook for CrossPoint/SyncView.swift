@@ -29,11 +29,16 @@ struct SyncView: View {
                         .frame(height: 0.5)
 
                     DeviceFirmwarePanel(
-                        deviceInfo: firmwareUpdater.deviceInfo,
+                        // Prefer the version read during the running sync
+                        // session — it's read on the first BLE handshake
+                        // so the panel populates the moment the device is
+                        // discovered. firmwareUpdater.deviceInfo is the
+                        // fallback after a successful OTA when we
+                        // re-probe to verify the new version.
+                        deviceInfo: sync.deviceInfo ?? firmwareUpdater.deviceInfo,
                         latest: releaseChecker.latest,
+                        syncPhase: sync.phase,
                         updaterPhase: firmwareUpdater.phase,
-                        syncBlocking: sync.phase.isActive,
-                        onCheck: { firmwareUpdater.checkDeviceVersion() },
                         onUpdate: { showingFirmwareUpdate = true })
                         .padding(.horizontal, 24)
                         .padding(.vertical, 14)
@@ -425,15 +430,22 @@ struct SyncBookRow: View {
 // BLE peripheral.
 
 private struct DeviceFirmwarePanel: View {
+    /// Device identity. nil until the SyncManager's BLE handshake reads
+    /// the Info characteristic, OR forever if the firmware predates Info
+    /// support (in which case the searching state shows until the sync
+    /// phase becomes done/error/cancelled, then we explain).
     let deviceInfo: DeviceFirmwareInfo?
     let latest: FirmwareReleaseInfo?
+    /// Current SyncManager phase — drives whether we're still actively
+    /// looking for the device.
+    let syncPhase: SyncPhase
+    /// FirmwareUpdateManager phase — used to disable the Update button
+    /// while an OTA is in flight on a different sheet.
     let updaterPhase: FirmwareUpdatePhase
-    let syncBlocking: Bool
-    let onCheck: () -> Void
     let onUpdate: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 6) {
                 Text("DEVICE")
                     .font(.system(.caption2, design: .monospaced).weight(.medium))
@@ -445,69 +457,101 @@ private struct DeviceFirmwarePanel: View {
                         .foregroundStyle(Color.paperRule)
                 }
             }
-            HStack(spacing: 8) {
-                Image(systemName: "cube")
-                    .font(.system(size: 13, weight: .light))
-                    .foregroundStyle(Color.paperInk)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(deviceInfo == nil ? "CrossPoint AirBook" : "CrossPoint AirBook")
-                        .font(.system(.subheadline, design: .serif).weight(.bold))
-                        .foregroundStyle(Color.paperInk)
-                    Text(versionLine)
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(Color.paperRule)
-                }
-                Spacer()
-                actionButton
+
+            // The panel has three discrete shapes:
+            //   1. searching — nothing known yet, sync still negotiating
+            //   2. found — name + firmware version (+ optional Update CTA)
+            //   3. unknown — sync ended without us reading the Info char
+            //      (older firmware); explain what to do.
+            switch panelState {
+            case .searching:
+                searchingRow
+            case .found(let info):
+                foundRow(info: info)
+                if shouldOfferUpdate(for: info) { updateBanner(for: info) }
+            case .legacyNoInfo:
+                legacyRow
             }
-            if updateAvailable {
-                updateBanner
-            } else if let err = checkerError {
-                Text(err)
-                    .font(.system(.caption2, design: .monospaced))
+        }
+    }
+
+    // MARK: Sub-rows
+
+    private var searchingRow: some View {
+        HStack(spacing: 10) {
+            ProgressView().scaleEffect(0.6).tint(Color.paperInk)
+            Text("Searching for CrossPoint…")
+                .font(.system(.subheadline, design: .serif))
+                .foregroundStyle(Color.paperInk)
+            Spacer()
+        }
+    }
+
+    private func foundRow(info: DeviceFirmwareInfo) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "cube")
+                .font(.system(size: 14, weight: .light))
+                .foregroundStyle(Color.paperInk)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("CrossPoint AirBook")
+                    .font(.system(.subheadline, design: .serif).weight(.bold))
+                    .foregroundStyle(Color.paperInk)
+                Text("Firmware \(info.version.isEmpty ? "—" : info.version)")
+                    .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(Color.paperRule)
             }
+            Spacer()
+            if shouldOfferUpdate(for: info) {
+                updateButton
+            }
         }
     }
 
-    private var versionLine: String {
-        if let v = deviceInfo?.version, !v.isEmpty {
-            return "Firmware \(v)"
+    private var legacyRow: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 10) {
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.system(size: 13, weight: .light))
+                    .foregroundStyle(Color.paperRule)
+                Text("Couldn't read device firmware")
+                    .font(.system(.subheadline, design: .serif))
+                    .foregroundStyle(Color.paperInk)
+                Spacer()
+            }
+            Text("The reader is on an older build that doesn't report its version. Re-flash from the web tool to enable wireless updates.")
+                .font(.system(.caption, design: .monospaced))
+                .foregroundStyle(Color.paperRule)
+                .fixedSize(horizontal: false, vertical: true)
         }
-        return "Firmware unknown — tap Check"
     }
 
-    private var updateAvailable: Bool {
-        guard let device = deviceInfo, let latest else { return false }
-        return latest.isNewerThan(device.version)
-    }
+    // MARK: Update banner / button
 
-    private var checkerError: String? {
-        // Surface "Couldn't reach GitHub" inline so the user knows why no
-        // update banner appears even though they just checked.
-        nil
+    private func shouldOfferUpdate(for info: DeviceFirmwareInfo) -> Bool {
+        guard let latest else { return false }
+        return latest.isNewerThan(info.version)
     }
 
     @ViewBuilder
-    private var actionButton: some View {
-        if updaterPhase.isActive {
-            ProgressView().scaleEffect(0.6).tint(Color.paperInk)
-        } else if deviceInfo == nil {
-            compactButton("Check", action: onCheck, enabled: !syncBlocking)
-        } else if updateAvailable {
-            compactButton("Update", action: onUpdate, enabled: !syncBlocking, emphasized: true)
-        } else {
-            // Already on the latest — silent.
-            EmptyView()
+    private var updateButton: some View {
+        Button(action: onUpdate) {
+            Text("Update")
+                .font(.system(.caption, design: .monospaced).weight(.bold))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .foregroundStyle(Color.paperBackground)
+                .background(Color.paperInk)
         }
+        .disabled(updaterPhase.isActive || syncPhase.isActive)
+        .opacity((updaterPhase.isActive || syncPhase.isActive) ? 0.4 : 1)
     }
 
-    private var updateBanner: some View {
+    private func updateBanner(for info: DeviceFirmwareInfo) -> some View {
         HStack(spacing: 8) {
             Image(systemName: "arrow.up.circle")
                 .font(.system(size: 12, weight: .light))
                 .foregroundStyle(Color.paperInk)
-            Text(bannerText)
+            Text("Firmware update available: \(info.version) → \(latest?.version ?? "")")
                 .font(.system(.caption, design: .serif))
                 .foregroundStyle(Color.paperInk)
                 .fixedSize(horizontal: false, vertical: true)
@@ -518,28 +562,31 @@ private struct DeviceFirmwarePanel: View {
         .overlay(Rectangle().stroke(Color.paperInk.opacity(0.35), lineWidth: 0.5))
     }
 
-    private var bannerText: String {
-        guard let latest else { return "" }
-        if let installed = deviceInfo?.version, !installed.isEmpty {
-            return "Firmware update available: \(installed) → \(latest.version)"
-        }
-        return "Firmware update available: \(latest.version)"
+    // MARK: State decision
+
+    private enum PanelState {
+        case searching
+        case found(DeviceFirmwareInfo)
+        case legacyNoInfo
     }
 
-    private func compactButton(_ label: String,
-                               action: @escaping () -> Void,
-                               enabled: Bool,
-                               emphasized: Bool = false) -> some View {
-        Button(action: action) {
-            Text(label)
-                .font(.system(.caption, design: .monospaced).weight(.bold))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .foregroundStyle(emphasized ? Color.paperBackground : Color.paperInk)
-                .background(emphasized ? Color.paperInk : Color.clear)
-                .overlay(Rectangle().stroke(Color.paperInk, lineWidth: emphasized ? 0 : 0.6))
+    private var panelState: PanelState {
+        if let info = deviceInfo { return .found(info) }
+        // No info yet — are we still trying, or did sync wrap up without
+        // ever reading it?
+        switch syncPhase {
+        case .scanning, .connecting, .handshake:
+            return .searching
+        case .listing, .executing, .finalizing:
+            // We're past the handshake and Info char read should have
+            // landed by now. If it didn't, the firmware predates Info
+            // support. Don't lie about "Searching..." while a sync is
+            // already running its file ops.
+            return .legacyNoInfo
+        case .done, .cancelled, .error:
+            return .legacyNoInfo
+        case .idle:
+            return .searching
         }
-        .disabled(!enabled)
-        .opacity(enabled ? 1 : 0.4)
     }
 }

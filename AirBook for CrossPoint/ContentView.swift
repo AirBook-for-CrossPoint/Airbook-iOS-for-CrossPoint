@@ -171,8 +171,11 @@ struct ContentView: View {
 
     private var masthead: some View {
         HStack(alignment: .center, spacing: 8) {
-            Text("AirBook")
-                .font(.system(.title, design: .serif).weight(.bold))
+            // Mixed-weight wordmark: "Air" thin/light, "Book" bold —
+            // gives the masthead a magazine-style lockup while staying in
+            // the serif family used everywhere else.
+            (Text("Air").font(.system(.title, design: .serif).weight(.light))
+                + Text("Book").font(.system(.title, design: .serif).weight(.bold)))
                 .foregroundStyle(Color.paperInk)
                 .onLongPressGesture { showingDiagnostics = true }
 

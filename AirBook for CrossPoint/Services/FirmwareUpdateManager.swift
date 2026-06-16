@@ -368,10 +368,13 @@ final class FirmwareUpdateManager: NSObject {
                          for: dc, type: .withoutResponse)
             uploadOffset = end
         }
-        // Refresh phase so the UI shows the local-stream progress even
-        // before the device sends back an OTA_PROGRESS (which is throttled
-        // to one notify per 32 KB on the device side).
-        phase = .sending(bytesDone: Int64(uploadOffset), bytesTotal: Int64(total))
+        // Phase is intentionally not updated from uploadOffset here. iOS's
+        // GATT queue is large enough that uploadOffset rockets to total in
+        // a single pumpUpload(), while bytes only trickle over the radio at
+        // ~30 KB/s. The user would see the bar jump to 100% and then snap
+        // back down to whatever OTA_PROGRESS reports — that's the glitch.
+        // Device-reported OTA_PROGRESS is the truth, so we let the status
+        // handler update the bar exclusively.
 
         if uploadOffset >= total {
             writeControl("OTA_END")

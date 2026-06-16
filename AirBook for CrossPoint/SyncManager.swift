@@ -162,6 +162,7 @@ private let kServiceUUID = CBUUID(string: "8b45f100-9128-4d4f-9a4f-7a0dc1b26b01"
 private let kControlUUID = CBUUID(string: "8b45f101-9128-4d4f-9a4f-7a0dc1b26b01")
 private let kDataUUID    = CBUUID(string: "8b45f102-9128-4d4f-9a4f-7a0dc1b26b01")
 private let kStatusUUID  = CBUUID(string: "8b45f103-9128-4d4f-9a4f-7a0dc1b26b01")
+private let kInfoUUID    = CBUUID(string: "8b45f104-9128-4d4f-9a4f-7a0dc1b26b01")
 
 private let kDeviceName  = "CrossPoint AirBook"
 
@@ -172,6 +173,10 @@ private let kDeviceName  = "CrossPoint AirBook"
 final class SyncManager: NSObject {
     var phase: SyncPhase = .idle
     var bookEntries: [SyncBookEntry] = []
+    /// Device identity, populated when the BLE handshake reads the Info
+    /// characteristic. Stays nil for older firmware that doesn't expose it
+    /// — the UI uses that to decide between "Searching..." and "found".
+    var deviceInfo: DeviceFirmwareInfo?
     /// Ring-buffer of the most recent BLE control/status lines, oldest first.
     /// Surfaced by `SyncDiagnosticsView` for in-the-wild troubleshooting.
     private(set) var traceLog: [String] = []
@@ -183,6 +188,7 @@ final class SyncManager: NSObject {
     @ObservationIgnored private var controlChar: CBCharacteristic?
     @ObservationIgnored private var dataChar: CBCharacteristic?
     @ObservationIgnored private var statusChar: CBCharacteristic?
+    @ObservationIgnored private var infoChar: CBCharacteristic?
     @ObservationIgnored private var scanTimer: Timer?
     @ObservationIgnored private var discoveryTimer: Timer?
     @ObservationIgnored private var discoveredPeripherals: [CBPeripheral] = []
@@ -211,6 +217,11 @@ final class SyncManager: NSObject {
     @ObservationIgnored private var phaseDone: Int = 0
     @ObservationIgnored private var currentUploadOffset: Int = 0
     @ObservationIgnored private var summary = SyncSummary()
+
+    // Overall upload progress so the SyncStatusHeader's bar reflects all
+    // books, not just the one currently in flight. Set at plan time.
+    @ObservationIgnored private var totalBytesPlanned: Int64 = 0
+    @ObservationIgnored private var totalBytesCompleted: Int64 = 0
 
     // Reading-state sync (V3 only)
     @ObservationIgnored private var rsBookQueue: [UUID] = []
@@ -259,6 +270,7 @@ final class SyncManager: NSObject {
 
     private func reset(toIdle: Bool) {
         bookEntries = []
+        deviceInfo = nil
         deviceReport = [:]
         deviceFilenames = [:]
         v3Entries = [:]
@@ -269,6 +281,8 @@ final class SyncManager: NSObject {
         phaseTotal = 0
         phaseDone = 0
         currentUploadOffset = 0
+        totalBytesPlanned = 0
+        totalBytesCompleted = 0
         summary = SyncSummary()
         discoveredPeripherals = []
         protocolVersion = .v2
@@ -489,17 +503,20 @@ final class SyncManager: NSObject {
     }
 
     private func handleProgress(payload: String) {
+        // PROGRESS:<done>:<total> is per-book on the wire. Convert to the
+        // overall counters so the header bar tracks all uploads together
+        // instead of resetting between books.
         let parts = payload.split(separator: ":")
         guard parts.count == 2,
-              let done = Int64(parts[0]),
-              let total = Int64(parts[1]),
-              total > 0,
+              let bookDone = Int64(parts[0]),
+              let bookTotal = Int64(parts[1]),
+              bookTotal > 0,
               case .executing(var step) = phase else { return }
 
-        step.bytesTransferred = done
-        step.bytesTotal = total
+        step.bytesTransferred = totalBytesCompleted + bookDone
+        step.bytesTotal = max(totalBytesPlanned, totalBytesCompleted + bookTotal)
         phase = .executing(step)
-        updateUploadingProgress(done: done, total: total)
+        updateUploadingProgress(done: bookDone, total: bookTotal)
     }
 
     private func handleOpError(forID id: UUID?, message: String) {
@@ -579,6 +596,8 @@ final class SyncManager: NSObject {
             }
         }
         uploadQueue = uploads
+        totalBytesPlanned = uploads.reduce(Int64(0)) { $0 + Int64($1.data.count) }
+        totalBytesCompleted = 0
 
         // Build the visible entry list, in execution order so the UI reads
         // top-to-bottom as the sync progresses.
@@ -688,11 +707,14 @@ final class SyncManager: NSObject {
             phaseDone = 0
         }
         currentUploadOffset = 0
+        // bytesTransferred/bytesTotal now drive the overall progress bar
+        // (sum across all queued uploads), not the per-book progress. The
+        // "1/N" counter still tracks individual books via current/total.
         phase = .executing(.init(label: phaseLabel,
                                   current: phaseDone + 1,
                                   total: phaseTotal,
-                                  bytesTransferred: 0,
-                                  bytesTotal: Int64(upload.data.count)))
+                                  bytesTransferred: totalBytesCompleted,
+                                  bytesTotal: totalBytesPlanned))
         markEntry(id: book.id, action: .uploading)
         writeControl("START_V2:\(book.id.uuidString):\(upload.data.count):\(book.filename)")
         // Device responds with READY; pumpUpload starts shipping bytes.
@@ -713,6 +735,10 @@ final class SyncManager: NSObject {
     }
 
     private func updateUploadingProgress(done: Int64, total: Int64) {
+        // `done`/`total` here are per-book (used by the row's progress
+        // ring). The header bar reads bytesTransferred/bytesTotal from
+        // the StepInfo, which already holds the overall counters set
+        // upstream in handleProgress.
         guard !uploadQueue.isEmpty, total > 0 else { return }
         let book = uploadQueue[0].book
         let p = Double(done) / Double(total)
@@ -720,8 +746,8 @@ final class SyncManager: NSObject {
             bookEntries[idx].progress = p
         }
         if case .executing(var step) = phase {
-            step.bytesTransferred = done
-            step.bytesTotal = total
+            step.bytesTransferred = totalBytesCompleted + done
+            step.bytesTotal = max(totalBytesPlanned, totalBytesCompleted + total)
             phase = .executing(step)
         }
     }
@@ -736,6 +762,10 @@ final class SyncManager: NSObject {
         store?.markUploaded(book)
         markEntry(id: id, action: .uploaded)
         summary.uploaded += 1
+        // Roll the just-finished book's full byte count into the overall
+        // total so the header bar doesn't snap backwards when the next
+        // upload starts.
+        totalBytesCompleted += Int64(uploadQueue[0].data.count)
         advanceUploadCursor()
         advance()
     }
@@ -1350,6 +1380,7 @@ final class SyncManager: NSObject {
         controlChar = nil
         dataChar = nil
         statusChar = nil
+        infoChar = nil
     }
 }
 
@@ -1426,7 +1457,8 @@ extension SyncManager: CBPeripheralDelegate {
             shutdown()
             return
         }
-        peripheral.discoverCharacteristics([kControlUUID, kDataUUID, kStatusUUID], for: service)
+        peripheral.discoverCharacteristics(
+            [kControlUUID, kDataUUID, kStatusUUID, kInfoUUID], for: service)
     }
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
@@ -1440,6 +1472,7 @@ extension SyncManager: CBPeripheralDelegate {
             case kControlUUID: controlChar = char
             case kDataUUID:    dataChar = char
             case kStatusUUID:  statusChar = char
+            case kInfoUUID:    infoChar = char
             default: break
             }
         }
@@ -1450,6 +1483,14 @@ extension SyncManager: CBPeripheralDelegate {
         }
         chunkSize = max(20, peripheral.maximumWriteValueLength(for: .withoutResponse))
         peripheral.setNotifyValue(true, for: sc)
+        // Kick off the Info read in parallel with the V3 handshake. The
+        // device info shows up in the Device panel as soon as the read
+        // lands; if the firmware predates Info char support, infoChar
+        // stays nil and we just don't expose a version. Either way the
+        // sync handshake proceeds.
+        if let ic = infoChar {
+            peripheral.readValue(for: ic)
+        }
         phase = .handshake
         // Try V3 first. On ERROR during handshake we fall back to V2
         // transparently — see handleStatus's ERROR: branch.
@@ -1458,6 +1499,14 @@ extension SyncManager: CBPeripheralDelegate {
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
+        if characteristic.uuid == kInfoUUID {
+            if let data = characteristic.value,
+               let info = DeviceFirmwareInfo.parse(data) {
+                deviceInfo = info
+                appendTrace("info: fw=\(info.version) caps=\(info.capabilities.sorted().joined(separator: ","))")
+            }
+            return
+        }
         guard characteristic.uuid == kStatusUUID,
               let data = characteristic.value,
               let msg = String(data: data, encoding: .utf8) else { return }

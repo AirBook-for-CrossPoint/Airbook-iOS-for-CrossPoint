@@ -31,7 +31,15 @@ struct BookDetailView: View {
     private var book: Book? { store.books.first(where: { $0.id == bookID }) }
 
     var body: some View {
-        NavigationStack {
+        // @Observable observation tripwire: ReadingStateStore tracks its
+        // cache via the `revision` counter (the dict itself is @Observation
+        // Ignored to keep tracking cheap). Body must touch `revision` so
+        // collection/highlight/bookmark mutations re-render the detail
+        // sections instantly instead of waiting for some other dependency
+        // to invalidate the view.
+        _ = readingStateStore.revision
+
+        return NavigationStack {
             ZStack {
                 Color.paperBackground.ignoresSafeArea()
 
