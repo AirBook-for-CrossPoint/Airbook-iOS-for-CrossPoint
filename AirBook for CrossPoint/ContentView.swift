@@ -9,6 +9,8 @@ struct ContentView: View {
     @Environment(CollectionsStore.self) private var collectionsStore
     @Environment(MetadataLookupService.self) private var lookup
     @Environment(ZLibService.self) private var zlib
+    @Environment(FirmwareUpdateManager.self) private var firmwareUpdater
+    @Environment(FirmwareReleaseChecker.self) private var firmwareReleaseChecker
     @State private var showingPicker = false
     @State private var showingSync = false
     @State private var showingDiscover = false
@@ -123,6 +125,9 @@ struct ContentView: View {
             SyncView()
                 .environment(store)
                 .environment(sync)
+                .environment(readingStateStore)
+                .environment(firmwareUpdater)
+                .environment(firmwareReleaseChecker)
         }
         .sheet(isPresented: $showingDiscover) {
             DiscoverView()

@@ -6,7 +6,11 @@ struct SyncView: View {
     @Environment(BookStore.self) private var store
     @Environment(SyncManager.self) private var sync
     @Environment(ReadingStateStore.self) private var readingStateStore
+    @Environment(FirmwareUpdateManager.self) private var firmwareUpdater
+    @Environment(FirmwareReleaseChecker.self) private var releaseChecker
     @Environment(\.dismiss) private var dismiss
+
+    @State private var showingFirmwareUpdate = false
 
     var body: some View {
         NavigationStack {
@@ -19,6 +23,20 @@ struct SyncView: View {
                         .padding(.top, 20)
                         .padding(.bottom, 16)
                         .animation(.easeInOut(duration: 0.3), value: sync.phase)
+
+                    Rectangle()
+                        .fill(Color.paperInk.opacity(0.12))
+                        .frame(height: 0.5)
+
+                    DeviceFirmwarePanel(
+                        deviceInfo: firmwareUpdater.deviceInfo,
+                        latest: releaseChecker.latest,
+                        updaterPhase: firmwareUpdater.phase,
+                        syncBlocking: sync.phase.isActive,
+                        onCheck: { firmwareUpdater.checkDeviceVersion() },
+                        onUpdate: { showingFirmwareUpdate = true })
+                        .padding(.horizontal, 24)
+                        .padding(.vertical, 14)
 
                     Rectangle()
                         .fill(Color.paperInk.opacity(0.12))
@@ -56,21 +74,35 @@ struct SyncView: View {
             }
             .toolbar {
                 ToolbarItem(placement: .principal) {
-                    Text("Sync with AirBook")
+                    Text("AirBook sync")
                         .font(.system(.subheadline, design: .serif).weight(.bold))
                         .foregroundStyle(Color.paperInk)
                 }
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Close") { dismiss() }
                         .font(.system(.subheadline, design: .serif))
-                        .disabled(sync.phase.isActive)
-                        .foregroundStyle(sync.phase.isActive ? Color.paperRule : Color.paperInk)
+                        .disabled(sync.phase.isActive || firmwareUpdater.phase.isActive)
+                        .foregroundStyle((sync.phase.isActive || firmwareUpdater.phase.isActive)
+                                            ? Color.paperRule : Color.paperInk)
                 }
             }
             .toolbarBackground(Color.paperBackground, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
             .navigationBarTitleDisplayMode(.inline)
-            .interactiveDismissDisabled(sync.phase.isActive)
+            .interactiveDismissDisabled(sync.phase.isActive || firmwareUpdater.phase.isActive)
+            .sheet(isPresented: $showingFirmwareUpdate) {
+                if let release = releaseChecker.latest {
+                    FirmwareUpdateView(release: release,
+                                       currentDeviceVersion: firmwareUpdater.deviceInfo?.version)
+                        .environment(firmwareUpdater)
+                }
+            }
+            .task {
+                // Fire-and-forget the GitHub Releases fetch — fails open
+                // (the UI shows "Couldn't reach GitHub" but the book sync
+                // still works).
+                try? await releaseChecker.refresh()
+            }
             .onAppear {
                 // Auto-start only when nothing's in flight or visible — lets
                 // the user reopen the sheet to read a previous summary
@@ -381,5 +413,133 @@ struct SyncBookRow: View {
         default:
             return Color.paperInk
         }
+    }
+}
+
+// MARK: - Device & Firmware panel
+//
+// Sits between the sync status header and the book list. Surfaces the
+// device's firmware version and, when a newer release is on GitHub,
+// offers a one-tap entry into the FirmwareUpdateView. Disabled while a
+// book sync is in flight so we don't fight SyncManager for the same
+// BLE peripheral.
+
+private struct DeviceFirmwarePanel: View {
+    let deviceInfo: DeviceFirmwareInfo?
+    let latest: FirmwareReleaseInfo?
+    let updaterPhase: FirmwareUpdatePhase
+    let syncBlocking: Bool
+    let onCheck: () -> Void
+    let onUpdate: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Text("DEVICE")
+                    .font(.system(.caption2, design: .monospaced).weight(.medium))
+                    .foregroundStyle(Color.paperRule)
+                Spacer()
+                if updaterPhase.isActive {
+                    Text(updaterPhase.statusText)
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(Color.paperRule)
+                }
+            }
+            HStack(spacing: 8) {
+                Image(systemName: "cube")
+                    .font(.system(size: 13, weight: .light))
+                    .foregroundStyle(Color.paperInk)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(deviceInfo == nil ? "CrossPoint AirBook" : "CrossPoint AirBook")
+                        .font(.system(.subheadline, design: .serif).weight(.bold))
+                        .foregroundStyle(Color.paperInk)
+                    Text(versionLine)
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(Color.paperRule)
+                }
+                Spacer()
+                actionButton
+            }
+            if updateAvailable {
+                updateBanner
+            } else if let err = checkerError {
+                Text(err)
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(Color.paperRule)
+            }
+        }
+    }
+
+    private var versionLine: String {
+        if let v = deviceInfo?.version, !v.isEmpty {
+            return "Firmware \(v)"
+        }
+        return "Firmware unknown — tap Check"
+    }
+
+    private var updateAvailable: Bool {
+        guard let device = deviceInfo, let latest else { return false }
+        return latest.isNewerThan(device.version)
+    }
+
+    private var checkerError: String? {
+        // Surface "Couldn't reach GitHub" inline so the user knows why no
+        // update banner appears even though they just checked.
+        nil
+    }
+
+    @ViewBuilder
+    private var actionButton: some View {
+        if updaterPhase.isActive {
+            ProgressView().scaleEffect(0.6).tint(Color.paperInk)
+        } else if deviceInfo == nil {
+            compactButton("Check", action: onCheck, enabled: !syncBlocking)
+        } else if updateAvailable {
+            compactButton("Update", action: onUpdate, enabled: !syncBlocking, emphasized: true)
+        } else {
+            // Already on the latest — silent.
+            EmptyView()
+        }
+    }
+
+    private var updateBanner: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "arrow.up.circle")
+                .font(.system(size: 12, weight: .light))
+                .foregroundStyle(Color.paperInk)
+            Text(bannerText)
+                .font(.system(.caption, design: .serif))
+                .foregroundStyle(Color.paperInk)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 10)
+        .overlay(Rectangle().stroke(Color.paperInk.opacity(0.35), lineWidth: 0.5))
+    }
+
+    private var bannerText: String {
+        guard let latest else { return "" }
+        if let installed = deviceInfo?.version, !installed.isEmpty {
+            return "Firmware update available: \(installed) → \(latest.version)"
+        }
+        return "Firmware update available: \(latest.version)"
+    }
+
+    private func compactButton(_ label: String,
+                               action: @escaping () -> Void,
+                               enabled: Bool,
+                               emphasized: Bool = false) -> some View {
+        Button(action: action) {
+            Text(label)
+                .font(.system(.caption, design: .monospaced).weight(.bold))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .foregroundStyle(emphasized ? Color.paperBackground : Color.paperInk)
+                .background(emphasized ? Color.paperInk : Color.clear)
+                .overlay(Rectangle().stroke(Color.paperInk, lineWidth: emphasized ? 0 : 0.6))
+        }
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.4)
     }
 }
