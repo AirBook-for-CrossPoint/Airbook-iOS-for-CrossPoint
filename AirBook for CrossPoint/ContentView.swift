@@ -24,6 +24,10 @@ struct ContentView: View {
     @State private var selectedBookID: UUID?
     @State private var query = LibraryQuery()
     @State private var showingDiagnostics = false
+    @State private var showingAnnotations = false
+    @State private var backupShareURL: URL?
+    @State private var backupErrorMessage: String?
+    @State private var showingBackupError = false
 
     private var visibleBooks: [Book] {
         query.apply(to: store.books,
@@ -162,10 +166,41 @@ struct ContentView: View {
             SyncDiagnosticsView()
                 .environment(sync)
         }
+        .sheet(isPresented: $showingAnnotations) {
+            AnnotationsView()
+                .environment(store)
+                .environment(readingStateStore)
+        }
+        .sheet(item: Binding(
+            get: { backupShareURL.map { BackupShareItem(url: $0) } },
+            set: { backupShareURL = $0?.url })
+        ) { item in
+            BackupShareSheet(items: [item.url])
+        }
         .alert("Import Failed", isPresented: $showingImportError) {
             Button("OK", role: .cancel) {}
         } message: {
             Text(importErrorMessage ?? "Unknown error")
+        }
+        .alert("Backup Failed", isPresented: $showingBackupError) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(backupErrorMessage ?? "Unknown error")
+        }
+    }
+
+    private func runBackup() async {
+        do {
+            // The zip work walks Documents/Books which can be hundreds of
+            // MB — push it off the main actor's render path so the menu
+            // dismissal animation stays smooth.
+            let url = try await Task.detached { @MainActor in
+                try LibraryBackup.createBackupArchive()
+            }.value
+            backupShareURL = url
+        } catch {
+            backupErrorMessage = error.localizedDescription
+            showingBackupError = true
         }
     }
 
@@ -176,10 +211,24 @@ struct ContentView: View {
             // Mixed-weight wordmark: "Air" thin/light, "Book" bold —
             // gives the masthead a magazine-style lockup while staying in
             // the serif family used everywhere else.
-            (Text("Air").font(.system(.title, design: .serif).weight(.light))
-                + Text("Book").font(.system(.title, design: .serif).weight(.bold)))
-                .foregroundStyle(Color.paperInk)
-                .onLongPressGesture { showingDiagnostics = true }
+            Menu {
+                Button {
+                    showingAnnotations = true
+                } label: { Label("Highlights", systemImage: "highlighter") }
+                Button {
+                    Task { await runBackup() }
+                } label: { Label("Back up library", systemImage: "archivebox") }
+                Divider()
+                Button {
+                    showingDiagnostics = true
+                } label: { Label("Sync diagnostics", systemImage: "wrench.adjustable") }
+            } label: {
+                (Text("Air").font(.system(.title, design: .serif).weight(.light))
+                    + Text("Book").font(.system(.title, design: .serif).weight(.bold)))
+                    .foregroundStyle(Color.paperInk)
+            }
+            .menuStyle(.borderlessButton)
+            .accessibilityLabel("AirBook menu")
 
             // Connection status dot
             Circle()
@@ -473,4 +522,19 @@ extension Color {
             ? UIColor(red: 0.62, green: 0.44, blue: 0.16, alpha: 1)
             : UIColor(red: 0.48, green: 0.28, blue: 0.05, alpha: 1)
     })
+}
+
+// MARK: - Backup share sheet bridge
+
+private struct BackupShareItem: Identifiable {
+    let url: URL
+    var id: URL { url }
+}
+
+private struct BackupShareSheet: UIViewControllerRepresentable {
+    let items: [Any]
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
 }

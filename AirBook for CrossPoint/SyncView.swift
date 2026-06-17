@@ -518,10 +518,31 @@ private struct DeviceFirmwarePanel: View {
                     updateButton
                 }
             }
+            if let stats = storageStatsLine(for: info) {
+                HStack(spacing: 10) {
+                    Image(systemName: "internaldrive")
+                        .font(.system(size: 11, weight: .light))
+                        .foregroundStyle(Color.paperRule)
+                    Text(stats)
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(Color.paperRule)
+                    Spacer()
+                }
+            }
             if shouldOfferBrowse(for: info) {
                 browseButton
             }
         }
+    }
+
+    private func storageStatsLine(for info: DeviceFirmwareInfo) -> String? {
+        // Firmware ≥ airbook.5 sends used_kb / books on the Info char.
+        // Pre-airbook.5 builds have no storage stats — return nil so
+        // the row collapses cleanly rather than showing "—".
+        guard let used = info.usedKB, let count = info.bookCount else { return nil }
+        let usedBytes = Int64(used) * 1024
+        let usedFmt = ByteCountFormatter.string(fromByteCount: usedBytes, countStyle: .file)
+        return "\(count) book\(count == 1 ? "" : "s") · \(usedFmt) on device"
     }
 
     private func shouldOfferBrowse(for info: DeviceFirmwareInfo) -> Bool {

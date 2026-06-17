@@ -3,11 +3,14 @@ import Foundation
 
 // MARK: - Models
 
-struct DeviceFileEntry: Identifiable, Equatable {
-    let uuid: String        // device-assigned UUID (from LIST_V2)
-    let filename: String
-    let size: Int64
-    var id: String { uuid }
+struct DeviceFileEntry: Identifiable, Equatable, Hashable {
+    let name: String        // basename — no path
+    let size: Int64         // 0 for directories
+    let isDirectory: Bool
+    /// Path relative to /AirBook (the firmware's root). `subfolder/book.epub`
+    /// for a file inside one subfolder, just `name` for /AirBook root.
+    let relativePath: String
+    var id: String { relativePath.isEmpty ? name : relativePath }
 }
 
 enum DeviceFileBrowserPhase: Equatable {
@@ -15,8 +18,8 @@ enum DeviceFileBrowserPhase: Equatable {
     case scanning
     case connecting
     case discovering
-    case listing
-    case ready([DeviceFileEntry])
+    case listing(path: String)   // path relative to /AirBook (empty = root)
+    case ready(path: String, entries: [DeviceFileEntry])
     case downloading(DeviceFileEntry, bytesDone: Int64, bytesTotal: Int64)
     case downloaded(DeviceFileEntry, URL)
     case failed(String)
@@ -28,12 +31,21 @@ enum DeviceFileBrowserPhase: Equatable {
         }
     }
 
-    var entries: [DeviceFileEntry] {
+    var currentPath: String {
         switch self {
-        case .ready(let list): return list
-        case .downloading(let entry, _, _): return [entry]
-        default: return []
+        case .listing(let p), .ready(let p, _): return p
+        case .downloading(let e, _, _), .downloaded(let e, _):
+            // Drop the filename from the relative path to get parent.
+            return parentOf(e.relativePath)
+        default: return ""
         }
+    }
+
+    private func parentOf(_ rel: String) -> String {
+        if let slash = rel.lastIndex(of: "/") {
+            return String(rel[..<slash])
+        }
+        return ""
     }
 }
 
@@ -71,6 +83,7 @@ final class DeviceFileBrowser: NSObject {
 
     // Listing accumulation
     @ObservationIgnored private var pendingEntries: [DeviceFileEntry] = []
+    @ObservationIgnored private var pendingPath: String = ""
 
     // Active download
     @ObservationIgnored private var downloadEntry: DeviceFileEntry?
@@ -98,14 +111,40 @@ final class DeviceFileBrowser: NSObject {
         }
     }
 
+    /// Navigate into a subfolder (already-connected session). The browser
+    /// fires a fresh BROWSE_LS for the new path and rebuilds the listing.
+    func navigate(into folder: DeviceFileEntry) {
+        guard folder.isDirectory else { return }
+        loadDirectory(folder.relativePath)
+    }
+
+    /// Pop up to the parent directory. No-op at root.
+    func navigateUp() {
+        let cur = phase.currentPath
+        if cur.isEmpty { return }
+        if let slash = cur.lastIndex(of: "/") {
+            loadDirectory(String(cur[..<slash]))
+        } else {
+            loadDirectory("")
+        }
+    }
+
+    private func loadDirectory(_ relativePath: String) {
+        guard peripheral != nil else { return }
+        pendingEntries = []
+        pendingPath = relativePath
+        phase = .listing(path: relativePath)
+        writeControl("BROWSE_LS:\(relativePath)")
+    }
+
     func download(_ entry: DeviceFileEntry) {
-        guard case .ready = phase else { return }
+        guard case .ready = phase, !entry.isDirectory else { return }
         downloadEntry = entry
         downloadBuffer = Data()
         downloadBuffer.reserveCapacity(Int(entry.size))
         downloadExpected = entry.size
         phase = .downloading(entry, bytesDone: 0, bytesTotal: entry.size)
-        writeControl("BROWSE_READ:\(entry.filename)")
+        writeControl("BROWSE_READ:\(entry.relativePath)")
     }
 
     func cancelDownload() {
@@ -113,8 +152,8 @@ final class DeviceFileBrowser: NSObject {
             writeControl("BROWSE_CANCEL")
             downloadEntry = nil
             downloadBuffer = Data()
-            // Drop back to the listing so the user can pick another.
-            phase = .ready(pendingEntries)
+            // Drop back to the listing the user came from.
+            phase = .ready(path: pendingPath, entries: pendingEntries)
         }
     }
 
@@ -130,6 +169,7 @@ final class DeviceFileBrowser: NSObject {
         discoveryTimer?.invalidate(); discoveryTimer = nil
         discoveredPeripherals = []
         pendingEntries = []
+        pendingPath = ""
         downloadEntry = nil
         downloadBuffer = Data()
         downloadExpected = 0
@@ -170,20 +210,18 @@ final class DeviceFileBrowser: NSObject {
         let msg = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         appendTrace("← \(msg)")
 
-        if msg == "SYNC_READY_V2" {
-            // We hijack the V2 sync handshake to bootstrap LIST_V2. The
-            // device doesn't care that we don't follow up with SYNC_END —
-            // browser sessions are explicitly short-lived from iOS side.
-            phase = .listing
-            writeControl("LIST_V2")
+        if msg.hasPrefix("BROWSE_ENTRY:") {
+            parseBrowseEntry(payload: String(msg.dropFirst("BROWSE_ENTRY:".count)))
             return
         }
-        if msg.hasPrefix("FILE_V2:") {
-            parseFileV2(payload: String(msg.dropFirst("FILE_V2:".count)))
-            return
-        }
-        if msg == "FILES_END" {
-            phase = .ready(pendingEntries)
+        if msg == "BROWSE_LS_END" {
+            // Folders first, then files — easier to scan, matches how
+            // most file pickers sort.
+            let sorted = pendingEntries.sorted { a, b in
+                if a.isDirectory != b.isDirectory { return a.isDirectory }
+                return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+            }
+            phase = .ready(path: pendingPath, entries: sorted)
             return
         }
         if msg.hasPrefix("BROWSE_READ_READY:") {
@@ -219,16 +257,18 @@ final class DeviceFileBrowser: NSObject {
         // device may still chatter from a previous session.
     }
 
-    private func parseFileV2(payload: String) {
-        // <uuid>:<has_file 0|1>:<size>:<filename>
-        let parts = payload.split(separator: ":", maxSplits: 3, omittingEmptySubsequences: false)
-        guard parts.count == 4,
-              let hasFileFlag = Int(parts[1]),
-              hasFileFlag == 1,           // only browsable files
-              let size = Int64(parts[2]) else { return }
-        let uuid = String(parts[0])
-        let filename = String(parts[3])
-        pendingEntries.append(DeviceFileEntry(uuid: uuid, filename: filename, size: size))
+    private func parseBrowseEntry(payload: String) {
+        // <type>:<size>:<name>     type 0=file, 1=dir.
+        // maxSplits=2 → name preserves any colons.
+        let parts = payload.split(separator: ":", maxSplits: 2, omittingEmptySubsequences: false)
+        guard parts.count == 3,
+              let type = Int(parts[0]),
+              let size = Int64(parts[1]) else { return }
+        let name = String(parts[2])
+        let isDir = (type == 1)
+        let rel = pendingPath.isEmpty ? name : "\(pendingPath)/\(name)"
+        pendingEntries.append(DeviceFileEntry(name: name, size: size,
+                                              isDirectory: isDir, relativePath: rel))
     }
 
     private func handleFileOutChunk(_ data: Data) {
@@ -255,7 +295,7 @@ final class DeviceFileBrowser: NSObject {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let dir = docs.appendingPathComponent("DeviceFiles", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let url = dir.appendingPathComponent(entry.filename)
+        let url = dir.appendingPathComponent(entry.name)
         do {
             try downloadBuffer.write(to: url, options: .atomic)
         } catch {
@@ -328,8 +368,6 @@ extension DeviceFileBrowser: CBCentralManagerDelegate {
     }
 
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
-        // Quiet drops while we're idle / showing a downloaded file are
-        // fine. Mid-listing or mid-download = failure.
         switch phase {
         case .listing, .downloading:
             phase = .failed("CrossPoint disconnected")
@@ -381,14 +419,10 @@ extension DeviceFileBrowser: CBPeripheralDelegate {
         peripheral.setNotifyValue(true, for: sc)
         peripheral.setNotifyValue(true, for: fo)
         if let ic = infoChar { peripheral.readValue(for: ic) }
-        // Hijack the V2 sync handshake to get LIST_V2 to work without
-        // doing a full sync. The device-side LIST_V2 handler is
-        // independent of syncMode_, so we technically don't need
-        // SYNC_START_V2 first — but sending it keeps the device in a
-        // clean Connected state and gives us a SYNC_READY_V2 ack we can
-        // pivot off.
-        phase = .listing
-        writeControl("SYNC_START_V2")
+        // BROWSE_LS works without a SYNC_START handshake — it's a
+        // standalone command on the firmware side. Start at the
+        // /AirBook root (empty relpath).
+        loadDirectory("")
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {

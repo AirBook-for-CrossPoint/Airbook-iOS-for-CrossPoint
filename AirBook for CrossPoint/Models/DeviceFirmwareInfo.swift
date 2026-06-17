@@ -16,13 +16,22 @@ struct DeviceFirmwareInfo: Equatable {
     let proto: Int
     /// Capability tokens — at least "book", "sync", "ota" on AirBook builds.
     let capabilities: Set<String>
+    /// Total kilobytes used by books in /AirBook on the SD card. nil if
+    /// the firmware predates storage reporting (airbook.5+).
+    let usedKB: Int?
+    /// Number of books in /AirBook. nil if predates airbook.5.
+    let bookCount: Int?
 
     var supportsOTA: Bool { capabilities.contains("ota") }
+    var supportsBrowse: Bool { capabilities.contains("browse") }
 
-    init(version: String, proto: Int, capabilities: Set<String>) {
+    init(version: String, proto: Int, capabilities: Set<String>,
+         usedKB: Int? = nil, bookCount: Int? = nil) {
         self.version = version
         self.proto = proto
         self.capabilities = capabilities
+        self.usedKB = usedKB
+        self.bookCount = bookCount
     }
 
     /// Parse the raw bytes from the Info characteristic. Tolerant: missing
@@ -36,20 +45,25 @@ struct DeviceFirmwareInfo: Equatable {
         var version = ""
         var proto = 0
         var caps: Set<String> = []
+        var usedKB: Int?
+        var bookCount: Int?
         for line in text.split(whereSeparator: { $0 == "\n" || $0 == "\r" }) {
             let parts = line.split(separator: "=", maxSplits: 1)
             guard parts.count == 2 else { continue }
             let key = parts[0].trimmingCharacters(in: .whitespaces)
             let value = parts[1].trimmingCharacters(in: .whitespaces)
             switch key {
-            case "fw":    version = value
-            case "proto": proto = Int(value) ?? 0
-            case "caps":  caps = Set(value.split(separator: ",").map {
-                                  $0.trimmingCharacters(in: .whitespaces)
-                              })
+            case "fw":      version = value
+            case "proto":   proto = Int(value) ?? 0
+            case "caps":    caps = Set(value.split(separator: ",").map {
+                                    $0.trimmingCharacters(in: .whitespaces)
+                                })
+            case "used_kb": usedKB = Int(value)
+            case "books":   bookCount = Int(value)
             default: break
             }
         }
-        return DeviceFirmwareInfo(version: version, proto: proto, capabilities: caps)
+        return DeviceFirmwareInfo(version: version, proto: proto, capabilities: caps,
+                                  usedKB: usedKB, bookCount: bookCount)
     }
 }

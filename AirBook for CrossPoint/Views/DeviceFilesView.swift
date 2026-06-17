@@ -50,10 +50,15 @@ struct DeviceFilesView: View {
     @ViewBuilder
     private var content: some View {
         switch browser.phase {
-        case .idle, .scanning, .connecting, .discovering, .listing:
-            connectingState
-        case .ready(let entries):
-            fileList(entries)
+        case .idle, .scanning, .connecting, .discovering:
+            connectingState(detail: nil)
+        case .listing(let path):
+            connectingState(detail: "Reading \(displayPath(path))…")
+        case .ready(let path, let entries):
+            VStack(spacing: 0) {
+                if !path.isEmpty { breadcrumbBar(path) }
+                fileList(entries)
+            }
         case .downloading(let entry, let done, let total):
             downloadingState(entry: entry, done: done, total: total)
         case .downloaded(let entry, let url):
@@ -63,13 +68,43 @@ struct DeviceFilesView: View {
         }
     }
 
-    private var connectingState: some View {
+    private func displayPath(_ path: String) -> String {
+        path.isEmpty ? "/AirBook" : "/AirBook/\(path)"
+    }
+
+    private func breadcrumbBar(_ path: String) -> some View {
+        HStack(spacing: 10) {
+            Button {
+                browser.navigateUp()
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 11, weight: .light))
+                    .foregroundStyle(Color.paperInk)
+                    .frame(width: 22, height: 22)
+            }
+            Text(displayPath(path))
+                .font(.system(.caption, design: .monospaced))
+                .foregroundStyle(Color.paperRule)
+                .lineLimit(1)
+                .truncationMode(.head)
+            Spacer()
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(Color.paperRule.opacity(0.25)).frame(height: 0.5)
+        }
+    }
+
+    private func connectingState(detail: String?) -> some View {
         VStack(spacing: 14) {
             Spacer()
             ProgressView().tint(Color.paperInk)
-            Text(browser.phase == .listing ? "Reading file list…" : "Connecting to CrossPoint…")
+            Text(detail ?? "Connecting to CrossPoint…")
                 .font(.system(.subheadline, design: .serif))
                 .foregroundStyle(Color.paperInk)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 28)
             Spacer()
         }
     }
@@ -107,26 +142,32 @@ struct DeviceFilesView: View {
 
     private func row(entry: DeviceFileEntry) -> some View {
         Button {
-            browser.download(entry)
+            if entry.isDirectory {
+                browser.navigate(into: entry)
+            } else {
+                browser.download(entry)
+            }
         } label: {
             HStack(spacing: 12) {
-                Image(systemName: iconName(for: entry.filename))
+                Image(systemName: iconName(for: entry))
                     .font(.system(size: 14, weight: .light))
                     .foregroundStyle(Color.paperInk)
                     .frame(width: 22)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(entry.filename)
+                    Text(entry.name)
                         .font(.system(.subheadline, design: .serif))
                         .foregroundStyle(Color.paperInk)
                         .lineLimit(2)
                         .multilineTextAlignment(.leading)
-                    Text(ByteCountFormatter.string(fromByteCount: entry.size, countStyle: .file))
+                    Text(entry.isDirectory
+                            ? "Folder"
+                            : ByteCountFormatter.string(fromByteCount: entry.size, countStyle: .file))
                         .font(.system(.caption2, design: .monospaced))
                         .foregroundStyle(Color.paperRule)
                 }
                 Spacer()
-                Image(systemName: "arrow.down.circle")
-                    .font(.system(size: 14, weight: .light))
+                Image(systemName: entry.isDirectory ? "chevron.right" : "arrow.down.circle")
+                    .font(.system(size: 12, weight: .light))
                     .foregroundStyle(Color.paperRule)
             }
             .padding(.horizontal, 20)
@@ -136,8 +177,9 @@ struct DeviceFilesView: View {
         .buttonStyle(.plain)
     }
 
-    private func iconName(for filename: String) -> String {
-        let lower = filename.lowercased()
+    private func iconName(for entry: DeviceFileEntry) -> String {
+        if entry.isDirectory { return "folder" }
+        let lower = entry.name.lowercased()
         if lower.hasSuffix(".epub") { return "book.closed" }
         if lower.hasSuffix(".bmp") || lower.hasSuffix(".jpg") || lower.hasSuffix(".png") {
             return "photo"
@@ -155,7 +197,7 @@ struct DeviceFilesView: View {
             Image(systemName: "arrow.down.doc")
                 .font(.system(size: 30, weight: .ultraLight))
                 .foregroundStyle(Color.paperInk)
-            Text(entry.filename)
+            Text(entry.name)
                 .font(.system(.subheadline, design: .serif).weight(.bold))
                 .foregroundStyle(Color.paperInk)
                 .multilineTextAlignment(.center)
@@ -204,7 +246,7 @@ struct DeviceFilesView: View {
             Image(systemName: "checkmark.circle")
                 .font(.system(size: 36, weight: .ultraLight))
                 .foregroundStyle(Color.paperInk)
-            Text("Got \(entry.filename)")
+            Text("Got \(entry.name)")
                 .font(.system(.subheadline, design: .serif).weight(.bold))
                 .foregroundStyle(Color.paperInk)
                 .multilineTextAlignment(.center)
