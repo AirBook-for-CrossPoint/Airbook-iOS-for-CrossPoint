@@ -191,6 +191,12 @@ final class SyncManager: NSObject {
     @ObservationIgnored private var infoChar: CBCharacteristic?
     @ObservationIgnored private var scanTimer: Timer?
     @ObservationIgnored private var discoveryTimer: Timer?
+    /// Per-operation watchdog: re-armed on every control write, incoming
+    /// status line, and outgoing data chunk. If the device goes silent
+    /// mid-sync (BLE link alive, firmware stuck) this fails the sync
+    /// cleanly instead of hanging forever.
+    @ObservationIgnored private var opTimer: Timer?
+    private let opTimeout: TimeInterval = 15
     @ObservationIgnored private var discoveredPeripherals: [CBPeripheral] = []
     @ObservationIgnored private weak var store: BookStore?
     @ObservationIgnored private weak var readingStateStore: ReadingStateStore?
@@ -204,12 +210,16 @@ final class SyncManager: NSObject {
     // V3 LIST also fills v3Entries with progress/bmk/highlight counts.
     @ObservationIgnored private var deviceReport: [UUID: DeviceFileState] = [:]
     @ObservationIgnored private var deviceFilenames: [UUID: String] = [:]
+    @ObservationIgnored private var deviceSizes: [UUID: Int64] = [:]
     @ObservationIgnored private var v3Entries: [UUID: DeviceV3Entry] = [:]
 
-    // Operation plan (drained in this order)
+    // Operation plan (drained in this order). Upload payloads are read
+    // lazily in performNextUpload so a large first sync doesn't hold every
+    // book in RAM at once.
     @ObservationIgnored private var deleteEntryQueue: [UUID] = []
     @ObservationIgnored private var removeFileQueue: [UUID] = []
-    @ObservationIgnored private var uploadQueue: [(book: Book, data: Data)] = []
+    @ObservationIgnored private var uploadQueue: [Book] = []
+    @ObservationIgnored private var currentUploadData: Data?
 
     // Execution cursors
     @ObservationIgnored private var phaseLabel: String = ""
@@ -273,10 +283,12 @@ final class SyncManager: NSObject {
         deviceInfo = nil
         deviceReport = [:]
         deviceFilenames = [:]
+        deviceSizes = [:]
         v3Entries = [:]
         deleteEntryQueue = []
         removeFileQueue = []
         uploadQueue = []
+        currentUploadData = nil
         phaseLabel = ""
         phaseTotal = 0
         phaseDone = 0
@@ -302,7 +314,18 @@ final class SyncManager: NSObject {
     private func writeControl(_ message: String) {
         guard let p = peripheral, let c = controlChar else { return }
         appendTrace("→ \(message)")
+        armOpWatchdog()
         p.writeValue(message.data(using: .utf8)!, for: c, type: .withResponse)
+    }
+
+    private func armOpWatchdog() {
+        opTimer?.invalidate()
+        opTimer = Timer.scheduledTimer(withTimeInterval: opTimeout, repeats: false) { [weak self] _ in
+            guard let self, self.phase.isActive else { return }
+            self.appendTrace("✗ watchdog: no response in \(Int(self.opTimeout))s")
+            self.phase = .error("CrossPoint stopped responding. Move closer and try again.")
+            self.shutdown()
+        }
     }
 
     private func appendTrace(_ line: String) {
@@ -322,6 +345,9 @@ final class SyncManager: NSObject {
         case .done, .error, .cancelled: return
         default: break
         }
+
+        // Any status line proves the device is alive.
+        armOpWatchdog()
 
         // Ignore the legacy "connected/waiting" pings — they predate the V2 flow.
         if msg == "CONNECTED" || msg == "WAITING" { return }
@@ -499,7 +525,7 @@ final class SyncManager: NSObject {
 
         deviceReport[id] = (hasFileFlag == 1) ? .filePresent : .entryOnly
         deviceFilenames[id] = String(parts[3])
-        _ = size  // currently informational only; could be surfaced in UI later
+        deviceSizes[id] = size
     }
 
     private func handleProgress(payload: String) {
@@ -584,10 +610,12 @@ final class SyncManager: NSObject {
 
         // 3. Uploads: every local book the device doesn't have. We do NOT
         //    auto-re-send entryOnly books — the user freed that space on purpose.
-        var uploads: [(book: Book, data: Data)] = []
+        //    File data is read lazily at send time; here we only verify the
+        //    file still exists.
+        var uploads: [Book] = []
         for book in store.books where deviceReport[book.id] == nil {
-            if let data = try? store.fileData(for: book) {
-                uploads.append((book, data))
+            if FileManager.default.fileExists(atPath: store.fileURL(for: book).path) {
+                uploads.append(book)
             } else {
                 bookEntries.append(SyncBookEntry(id: book.id,
                                                  displayTitle: book.displayTitle,
@@ -595,8 +623,35 @@ final class SyncManager: NSObject {
                                                  action: .failed("Local file missing")))
             }
         }
+
+        // Space budget: free_kb from the Info characteristic, plus bytes
+        // this plan frees on-device first (both DELETE_ENTRY and DELETE_FILE
+        // remove the file). Books that don't fit are dropped from the plan
+        // and surfaced as failed instead of erroring mid-transfer.
+        var skippedForSpace: [Book] = []
+        if let freeKB = deviceInfo?.freeKB {
+            var budget = Int64(freeKB) * 1024
+            for id in deleteEntryQueue + removeFileQueue
+            where deviceReport[id] == .filePresent {
+                budget += deviceSizes[id] ?? 0
+            }
+            // ponytail: flat 1 MB safety margin for cluster rounding + FS
+            // overhead; per-file cluster math if this ever proves too coarse.
+            budget -= 1_048_576
+            var kept: [Book] = []
+            for book in uploads {
+                if book.fileSize <= budget {
+                    budget -= book.fileSize
+                    kept.append(book)
+                } else {
+                    skippedForSpace.append(book)
+                }
+            }
+            uploads = kept
+        }
+
         uploadQueue = uploads
-        totalBytesPlanned = uploads.reduce(Int64(0)) { $0 + Int64($1.data.count) }
+        totalBytesPlanned = uploads.reduce(Int64(0)) { $0 + $1.fileSize }
         totalBytesCompleted = 0
 
         // Build the visible entry list, in execution order so the UI reads
@@ -614,9 +669,14 @@ final class SyncManager: NSObject {
             entries.append(SyncBookEntry(id: id, displayTitle: title,
                                          fileSize: book?.fileSize ?? 0, action: .willRemoveFile))
         }
-        for (book, _) in uploadQueue {
+        for book in uploadQueue {
             entries.append(SyncBookEntry(id: book.id, displayTitle: book.displayTitle,
                                          fileSize: book.fileSize, action: .willUpload))
+        }
+        for book in skippedForSpace {
+            entries.append(SyncBookEntry(id: book.id, displayTitle: book.displayTitle,
+                                         fileSize: book.fileSize,
+                                         action: .failed("Not enough free space on device")))
         }
         // Books already in good shape (entry+file, or entry-only kept on purpose).
         for book in store.books {
@@ -699,13 +759,19 @@ final class SyncManager: NSObject {
     }
 
     private func performNextUpload() {
-        let upload = uploadQueue[0]
-        let book = upload.book
+        let book = uploadQueue[0]
         if phaseLabel != "Sending books" {
             phaseLabel = "Sending books"
             phaseTotal = uploadQueue.count
             phaseDone = 0
         }
+        guard let data = try? store?.fileData(for: book) else {
+            markEntry(id: book.id, action: .failed("Local file missing"))
+            advanceUploadCursor()
+            advance()
+            return
+        }
+        currentUploadData = data
         currentUploadOffset = 0
         // bytesTransferred/bytesTotal now drive the overall progress bar
         // (sum across all queued uploads), not the per-book progress. The
@@ -716,15 +782,18 @@ final class SyncManager: NSObject {
                                   bytesTransferred: totalBytesCompleted,
                                   bytesTotal: totalBytesPlanned))
         markEntry(id: book.id, action: .uploading)
-        writeControl("START_V2:\(book.id.uuidString):\(upload.data.count):\(book.filename)")
+        writeControl("START_V2:\(book.id.uuidString):\(data.count):\(book.filename)")
         // Device responds with READY; pumpUpload starts shipping bytes.
     }
 
     private func pumpUpload() {
         guard !uploadQueue.isEmpty,
+              let data = currentUploadData,
               let p = peripheral,
               let dc = dataChar else { return }
-        let data = uploadQueue[0].data
+        if currentUploadOffset < data.count && p.canSendWriteWithoutResponse {
+            armOpWatchdog()  // outgoing bytes count as liveness too
+        }
         while currentUploadOffset < data.count && p.canSendWriteWithoutResponse {
             let end = min(currentUploadOffset + chunkSize, data.count)
             p.writeValue(data.subdata(in: currentUploadOffset..<end),
@@ -740,7 +809,7 @@ final class SyncManager: NSObject {
         // the StepInfo, which already holds the overall counters set
         // upstream in handleProgress.
         guard !uploadQueue.isEmpty, total > 0 else { return }
-        let book = uploadQueue[0].book
+        let book = uploadQueue[0]
         let p = Double(done) / Double(total)
         if let idx = bookEntries.firstIndex(where: { $0.id == book.id }) {
             bookEntries[idx].progress = p
@@ -757,15 +826,15 @@ final class SyncManager: NSObject {
     private func finishCurrentUpload(idString: String) {
         guard let id = UUID(uuidString: idString),
               !uploadQueue.isEmpty,
-              uploadQueue[0].book.id == id else { return }
-        let book = uploadQueue[0].book
+              uploadQueue[0].id == id else { return }
+        let book = uploadQueue[0]
         store?.markUploaded(book)
         markEntry(id: id, action: .uploaded)
         summary.uploaded += 1
         // Roll the just-finished book's full byte count into the overall
         // total so the header bar doesn't snap backwards when the next
         // upload starts.
-        totalBytesCompleted += Int64(uploadQueue[0].data.count)
+        totalBytesCompleted += Int64(currentUploadData?.count ?? 0)
         advanceUploadCursor()
         advance()
     }
@@ -797,6 +866,7 @@ final class SyncManager: NSObject {
         uploadQueue.removeFirst()
         phaseDone += 1
         currentUploadOffset = 0
+        currentUploadData = nil
     }
 
     private func advanceDeleteCursor() {
@@ -840,6 +910,7 @@ final class SyncManager: NSObject {
         let filename = String(parts[6])
         deviceReport[id] = (hasFileFlag == 1) ? .filePresent : .entryOnly
         deviceFilenames[id] = filename
+        deviceSizes[id] = size
         v3Entries[id] = DeviceV3Entry(
             hasFile: hasFileFlag == 1,
             size: size,
@@ -1160,8 +1231,11 @@ final class SyncManager: NSObject {
     }
 
     private func pumpReadingStateBlob() {
-        guard rsSubPhase == .streamingBookmarkBlob,
+        guard rsSubPhase == .streamingBookmarkBlob || rsSubPhase == .streamingHighlightBlob,
               let p = peripheral, let dc = dataChar else { return }
+        if rsPushOffset < rsPushBlob.count && p.canSendWriteWithoutResponse {
+            armOpWatchdog()
+        }
         while rsPushOffset < rsPushBlob.count && p.canSendWriteWithoutResponse {
             let end = min(rsPushOffset + chunkSize, rsPushBlob.count)
             p.writeValue(rsPushBlob.subdata(in: rsPushOffset..<end),
@@ -1169,7 +1243,8 @@ final class SyncManager: NSObject {
             rsPushOffset = end
         }
         if rsPushOffset >= rsPushBlob.count {
-            rsSubPhase = .awaitingBookmarkAck
+            rsSubPhase = (rsSubPhase == .streamingHighlightBlob)
+                ? .awaitingHighlightAck : .awaitingBookmarkAck
         }
     }
 
@@ -1372,6 +1447,7 @@ final class SyncManager: NSObject {
     private func shutdown() {
         scanTimer?.invalidate(); scanTimer = nil
         discoveryTimer?.invalidate(); discoveryTimer = nil
+        opTimer?.invalidate(); opTimer = nil
         central?.stopScan()
         if let p = peripheral { central?.cancelPeripheralConnection(p) }
         central?.delegate = nil

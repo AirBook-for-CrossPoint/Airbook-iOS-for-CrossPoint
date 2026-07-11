@@ -123,7 +123,11 @@ struct BookDetailView: View {
                 }
             }
         }, message: {
-            Text("The file will be removed from this device. The device entry, if any, will be deleted at the next sync.")
+            if let book, store.isOnDevice(book) {
+                Text("It will also be removed from your CrossPoint at the next sync.")
+            } else {
+                Text("The file will be removed from this iPhone.")
+            }
         })
     }
 

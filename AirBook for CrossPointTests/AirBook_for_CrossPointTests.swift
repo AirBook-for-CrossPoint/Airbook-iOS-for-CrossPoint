@@ -5,15 +5,50 @@
 //  Created by Ale on 08/06/26.
 //
 
+import Foundation
 import Testing
 @testable import AirBook_for_CrossPoint
 
 struct AirBook_for_CrossPointTests {
 
-    @Test func example() async throws {
-        // Write your test here and use APIs like `#expect(...)` to check expected conditions.
-        // Swift Testing Documentation
-        // https://developer.apple.com/documentation/testing
+    @Test func firmwareInfoParsesStorageFields() async throws {
+        let payload = "fw=1.5.0-airbook.7\nproto=2\ncaps=book,sync,ota,browse\nused_kb=51200\nbooks=12\nfree_kb=1048576\n"
+        let info = try #require(DeviceFirmwareInfo.parse(Data(payload.utf8)))
+        #expect(info.version == "1.5.0-airbook.7")
+        #expect(info.usedKB == 51200)
+        #expect(info.bookCount == 12)
+        #expect(info.freeKB == 1_048_576)
+    }
+
+    @Test func firmwareInfoToleratesMissingFreeKB() async throws {
+        let payload = "fw=1.4.0\nproto=2\ncaps=book,sync\n"
+        let info = try #require(DeviceFirmwareInfo.parse(Data(payload.utf8)))
+        #expect(info.freeKB == nil)
+    }
+
+    @MainActor
+    @Test func importRejectsDuplicateContent() async throws {
+        let store = BookStore()
+        // Unique content per run so leftovers from earlier runs can't collide.
+        var content = Data("duplicate-check \(UUID().uuidString)\n".utf8)
+        content.append(Data(count: 2048))
+
+        let tmp = FileManager.default.temporaryDirectory
+        let first = tmp.appendingPathComponent("dup-a-\(UUID().uuidString).txt")
+        let second = tmp.appendingPathComponent("dup-b-\(UUID().uuidString).txt")
+        try content.write(to: first)
+        try content.write(to: second)
+        defer {
+            try? FileManager.default.removeItem(at: first)
+            try? FileManager.default.removeItem(at: second)
+        }
+
+        let book = try store.importBook(from: first)
+        defer { store.deleteBook(book) }
+
+        #expect(throws: BookImportError.self) {
+            try store.importBook(from: second)
+        }
     }
 
 }
