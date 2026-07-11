@@ -21,17 +21,21 @@ struct DeviceFirmwareInfo: Equatable {
     let usedKB: Int?
     /// Number of books in /AirBook. nil if predates airbook.5.
     let bookCount: Int?
+    /// Free kilobytes on the SD card. nil if the firmware predates
+    /// free-space reporting. Used to pre-check the upload plan.
+    let freeKB: Int?
 
     var supportsOTA: Bool { capabilities.contains("ota") }
     var supportsBrowse: Bool { capabilities.contains("browse") }
 
     init(version: String, proto: Int, capabilities: Set<String>,
-         usedKB: Int? = nil, bookCount: Int? = nil) {
+         usedKB: Int? = nil, bookCount: Int? = nil, freeKB: Int? = nil) {
         self.version = version
         self.proto = proto
         self.capabilities = capabilities
         self.usedKB = usedKB
         self.bookCount = bookCount
+        self.freeKB = freeKB
     }
 
     /// Parse the raw bytes from the Info characteristic. Tolerant: missing
@@ -47,6 +51,7 @@ struct DeviceFirmwareInfo: Equatable {
         var caps: Set<String> = []
         var usedKB: Int?
         var bookCount: Int?
+        var freeKB: Int?
         for line in text.split(whereSeparator: { $0 == "\n" || $0 == "\r" }) {
             let parts = line.split(separator: "=", maxSplits: 1)
             guard parts.count == 2 else { continue }
@@ -60,10 +65,11 @@ struct DeviceFirmwareInfo: Equatable {
                                 })
             case "used_kb": usedKB = Int(value)
             case "books":   bookCount = Int(value)
+            case "free_kb": freeKB = Int(value)
             default: break
             }
         }
         return DeviceFirmwareInfo(version: version, proto: proto, capabilities: caps,
-                                  usedKB: usedKB, bookCount: bookCount)
+                                  usedKB: usedKB, bookCount: bookCount, freeKB: freeKB)
     }
 }

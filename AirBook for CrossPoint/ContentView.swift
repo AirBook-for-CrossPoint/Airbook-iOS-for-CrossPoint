@@ -28,6 +28,7 @@ struct ContentView: View {
     @State private var backupShareURL: URL?
     @State private var backupErrorMessage: String?
     @State private var showingBackupError = false
+    @State private var bookPendingDelete: Book?
 
     private var visibleBooks: [Book] {
         query.apply(to: store.books,
@@ -103,7 +104,7 @@ struct ContentView: View {
                                                 }
                                             }
                                             Button(role: .destructive) {
-                                                store.deleteBook(book)
+                                                bookPendingDelete = book
                                             } label: {
                                                 Label("Delete", systemImage: "trash")
                                             }
@@ -177,6 +178,18 @@ struct ContentView: View {
         ) { item in
             BackupShareSheet(items: [item.url])
         }
+        .alert("Delete from Library?",
+               isPresented: Binding(get: { bookPendingDelete != nil },
+                                    set: { if !$0 { bookPendingDelete = nil } }),
+               presenting: bookPendingDelete) { book in
+            Button("Cancel", role: .cancel) {}
+            Button("Delete", role: .destructive) {
+                store.deleteBook(book)
+                readingStateStore.purge(bookID: book.id)
+            }
+        } message: { book in
+            Text(deleteMessage(for: book))
+        }
         .alert("Import Failed", isPresented: $showingImportError) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -187,6 +200,12 @@ struct ContentView: View {
         } message: {
             Text(backupErrorMessage ?? "Unknown error")
         }
+    }
+
+    private func deleteMessage(for book: Book) -> String {
+        store.isOnDevice(book)
+            ? "“\(book.displayTitle)” will also be removed from your CrossPoint at the next sync."
+            : "“\(book.displayTitle)” will be removed from this iPhone."
     }
 
     private func runBackup() async {

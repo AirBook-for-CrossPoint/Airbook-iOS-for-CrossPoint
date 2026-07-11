@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import UIKit
 
@@ -75,6 +76,7 @@ struct Book: Identifiable, Codable, Equatable {
 enum BookImportError: LocalizedError {
     case unsupportedFormat
     case copyFailed(Error)
+    case duplicate(existingTitle: String)
 
     var errorDescription: String? {
         switch self {
@@ -82,6 +84,8 @@ enum BookImportError: LocalizedError {
             return "Unsupported format. Use EPUB, TXT, BMP, XTC or XTCH."
         case .copyFailed(let e):
             return "Import failed: \(e.localizedDescription)"
+        case .duplicate(let title):
+            return "Already in your library as “\(title)”."
         }
     }
 }
@@ -281,6 +285,21 @@ class BookStore {
         let ext = url.pathExtension.lowercased()
         guard BookStore.supportedExtensions.contains(ext) else {
             throw BookImportError.unsupportedFormat
+        }
+
+        // Content dedup: same size → compare SHA-256. Size gate keeps this
+        // cheap — we only hash when a same-size book already exists.
+        let incomingSize = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize)
+            .map(Int64.init)
+        let sameSize = books.filter { $0.fileSize == incomingSize }
+        if !sameSize.isEmpty, let incoming = try? Data(contentsOf: url) {
+            let incomingHash = SHA256.hash(data: incoming)
+            for existing in sameSize {
+                if let data = try? fileData(for: existing),
+                   SHA256.hash(data: data) == incomingHash {
+                    throw BookImportError.duplicate(existingTitle: existing.displayTitle)
+                }
+            }
         }
 
         let originalName = url.lastPathComponent
