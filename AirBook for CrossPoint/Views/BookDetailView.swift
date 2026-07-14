@@ -81,12 +81,17 @@ struct BookDetailView: View {
                         .font(.system(.subheadline, design: .serif))
                         .foregroundStyle(Color.paperInk)
                 }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
                     if isEditing {
                         Button("Save") { saveEdits() }
                             .font(.system(.subheadline, design: .serif).weight(.bold))
                             .foregroundStyle(Color.paperInk)
-                    } else if book != nil {
+                    } else if let book {
+                        ShareLink(item: store.fileURL(for: book),
+                                  preview: SharePreview(book.displayTitle)) {
+                            Image(systemName: "square.and.arrow.up")
+                                .foregroundStyle(Color.paperInk)
+                        }
                         Button("Edit") { startEditing() }
                             .font(.system(.subheadline, design: .serif))
                             .foregroundStyle(Color.paperInk)
