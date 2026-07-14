@@ -6,7 +6,18 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		71AB0D0C2FDA000000F8000C /* AirBookSyncWidgetExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 71AB0D012FDA000000F80001 /* AirBookSyncWidgetExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
+		71AB0D0E2FDA000000F8000E /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 7104A90A2FD768B300F8073D /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 71AB0D042FDA000000F80004;
+			remoteInfo = AirBookSyncWidgetExtension;
+		};
 		7104A9222FD768B500F8073D /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 7104A90A2FD768B300F8073D /* Project object */;
@@ -27,11 +38,32 @@
 		7104A9122FD768B300F8073D /* AirBook for CrossPoint.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "AirBook for CrossPoint.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		7104A9212FD768B500F8073D /* AirBook for CrossPointTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "AirBook for CrossPointTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		7104A92B2FD768B500F8073D /* AirBook for CrossPointUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "AirBook for CrossPointUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		71AB0D012FDA000000F80001 /* AirBookSyncWidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = AirBookSyncWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		71AB0D102FDA000000F80010 /* Exceptions for "AirBook for CrossPoint" folder in "AirBook for CrossPoint" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 7104A9112FD768B300F8073D /* AirBook for CrossPoint */;
+		};
+		71AB0D0F2FDA000000F8000F /* Exceptions for "AirBookSyncWidget" folder in "AirBookSyncWidgetExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 71AB0D042FDA000000F80004 /* AirBookSyncWidgetExtension */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		7104A9142FD768B300F8073D /* AirBook for CrossPoint */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				71AB0D102FDA000000F80010 /* Exceptions for "AirBook for CrossPoint" folder in "AirBook for CrossPoint" target */,
+			);
 			path = "AirBook for CrossPoint";
 			sourceTree = "<group>";
 		};
@@ -43,6 +75,19 @@
 		7104A92E2FD768B500F8073D /* AirBook for CrossPointUITests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = "AirBook for CrossPointUITests";
+			sourceTree = "<group>";
+		};
+		71AB0D022FDA000000F80002 /* AirBookSyncWidget */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				71AB0D0F2FDA000000F8000F /* Exceptions for "AirBookSyncWidget" folder in "AirBookSyncWidgetExtension" target */,
+			);
+			path = AirBookSyncWidget;
+			sourceTree = "<group>";
+		};
+		71AB0D032FDA000000F80003 /* Shared */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Shared;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -69,13 +114,36 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		71AB0D062FDA000000F80006 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		71AB0D0B2FDA000000F8000B /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				71AB0D0C2FDA000000F8000C /* AirBookSyncWidgetExtension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXGroup section */
 		7104A9092FD768B300F8073D = {
 			isa = PBXGroup;
 			children = (
 				7104A9142FD768B300F8073D /* AirBook for CrossPoint */,
+				71AB0D032FDA000000F80003 /* Shared */,
+				71AB0D022FDA000000F80002 /* AirBookSyncWidget */,
 				7104A9242FD768B500F8073D /* AirBook for CrossPointTests */,
 				7104A92E2FD768B500F8073D /* AirBook for CrossPointUITests */,
 				7104A9132FD768B300F8073D /* Products */,
@@ -88,6 +156,7 @@
 				7104A9122FD768B300F8073D /* AirBook for CrossPoint.app */,
 				7104A9212FD768B500F8073D /* AirBook for CrossPointTests.xctest */,
 				7104A92B2FD768B500F8073D /* AirBook for CrossPointUITests.xctest */,
+				71AB0D012FDA000000F80001 /* AirBookSyncWidgetExtension.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -102,13 +171,16 @@
 				7104A90E2FD768B300F8073D /* Sources */,
 				7104A90F2FD768B300F8073D /* Frameworks */,
 				7104A9102FD768B300F8073D /* Resources */,
+				71AB0D0B2FDA000000F8000B /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				71AB0D0D2FDA000000F8000D /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				7104A9142FD768B300F8073D /* AirBook for CrossPoint */,
+				71AB0D032FDA000000F80003 /* Shared */,
 			);
 			name = "AirBook for CrossPoint";
 			packageProductDependencies = (
@@ -163,6 +235,29 @@
 			productReference = 7104A92B2FD768B500F8073D /* AirBook for CrossPointUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
+		71AB0D042FDA000000F80004 /* AirBookSyncWidgetExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 71AB0D082FDA000000F80008 /* Build configuration list for PBXNativeTarget "AirBookSyncWidgetExtension" */;
+			buildPhases = (
+				71AB0D052FDA000000F80005 /* Sources */,
+				71AB0D062FDA000000F80006 /* Frameworks */,
+				71AB0D072FDA000000F80007 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				71AB0D022FDA000000F80002 /* AirBookSyncWidget */,
+				71AB0D032FDA000000F80003 /* Shared */,
+			);
+			name = AirBookSyncWidgetExtension;
+			packageProductDependencies = (
+			);
+			productName = AirBookSyncWidgetExtension;
+			productReference = 71AB0D012FDA000000F80001 /* AirBookSyncWidgetExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -184,6 +279,9 @@
 						CreatedOnToolsVersion = 26.4;
 						TestTargetID = 7104A9112FD768B300F8073D;
 					};
+					71AB0D042FDA000000F80004 = {
+						CreatedOnToolsVersion = 26.4;
+					};
 				};
 			};
 			buildConfigurationList = 7104A90D2FD768B300F8073D /* Build configuration list for PBXProject "AirBook for CrossPoint" */;
@@ -203,6 +301,7 @@
 				7104A9112FD768B300F8073D /* AirBook for CrossPoint */,
 				7104A9202FD768B500F8073D /* AirBook for CrossPointTests */,
 				7104A92A2FD768B500F8073D /* AirBook for CrossPointUITests */,
+				71AB0D042FDA000000F80004 /* AirBookSyncWidgetExtension */,
 			);
 		};
 /* End PBXProject section */
@@ -223,6 +322,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		7104A9292FD768B500F8073D /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		71AB0D072FDA000000F80007 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -253,6 +359,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		71AB0D052FDA000000F80005 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -265,6 +378,11 @@
 			isa = PBXTargetDependency;
 			target = 7104A9112FD768B300F8073D /* AirBook for CrossPoint */;
 			targetProxy = 7104A92C2FD768B500F8073D /* PBXContainerItemProxy */;
+		};
+		71AB0D0D2FDA000000F8000D /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 71AB0D042FDA000000F80004 /* AirBookSyncWidgetExtension */;
+			targetProxy = 71AB0D0E2FDA000000F8000E /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -401,6 +519,8 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "AirBook uses Bluetooth to send ebooks to your CrossPoint device.";
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
+				INFOPLIST_FILE = "AirBook for CrossPoint/Info.plist";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -434,6 +554,8 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "AirBook uses Bluetooth to send ebooks to your CrossPoint device.";
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
+				INFOPLIST_FILE = "AirBook for CrossPoint/Info.plist";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -540,6 +662,64 @@
 			};
 			name = Release;
 		};
+		71AB0D092FDA000000F80009 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = AH7YQ86734;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = AirBookSyncWidget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "AirBook Sync";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.4;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "ale.AirBook-for-CrossPoint.AirBookSyncWidget";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		71AB0D0A2FDA000000F8000A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = AH7YQ86734;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = AirBookSyncWidget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "AirBook Sync";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.4;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "ale.AirBook-for-CrossPoint.AirBookSyncWidget";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -575,6 +755,15 @@
 			buildConfigurations = (
 				7104A93C2FD768B500F8073D /* Debug */,
 				7104A93D2FD768B500F8073D /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		71AB0D082FDA000000F80008 /* Build configuration list for PBXNativeTarget "AirBookSyncWidgetExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				71AB0D092FDA000000F80009 /* Debug */,
+				71AB0D0A2FDA000000F8000A /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
