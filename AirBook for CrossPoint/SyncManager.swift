@@ -171,7 +171,9 @@ private let kDeviceName  = "CrossPoint AirBook"
 @MainActor
 @Observable
 final class SyncManager: NSObject {
-    var phase: SyncPhase = .idle
+    var phase: SyncPhase = .idle {
+        didSet { liveActivity.sync(phase: phase, detail: liveActivityDetail) }
+    }
     var bookEntries: [SyncBookEntry] = []
     /// Device identity, populated when the BLE handshake reads the Info
     /// characteristic. Stays nil for older firmware that doesn't expose it
@@ -252,6 +254,15 @@ final class SyncManager: NSObject {
     @ObservationIgnored private var handshakeAttempt: HandshakeAttempt = .none
 
     private enum HandshakeAttempt { case none, v3, v2 }
+
+    // Lock-screen / Dynamic Island mirror of the sync. Fed by phase's
+    // didSet so every transition (and throttled byte progress) shows up
+    // even while the app is backgrounded mid-transfer.
+    @ObservationIgnored private let liveActivity = SyncLiveActivityController()
+
+    private var liveActivityDetail: String {
+        bookEntries.first(where: { $0.action == .uploading })?.displayTitle ?? ""
+    }
 
     // MARK: - Public API
 
@@ -1466,7 +1477,9 @@ extension SyncManager: CBCentralManagerDelegate {
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         switch central.state {
         case .poweredOn:
-            central.scanForPeripherals(withServices: nil, options: nil)
+            // Filtering on the service UUID (advertised by the firmware) is
+            // required for scans to keep working if the app is backgrounded.
+            central.scanForPeripherals(withServices: [kServiceUUID], options: nil)
         case .poweredOff:
             phase = .error("Please enable Bluetooth to sync.")
             shutdown()
