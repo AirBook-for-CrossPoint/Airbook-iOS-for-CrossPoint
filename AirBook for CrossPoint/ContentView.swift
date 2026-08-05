@@ -28,6 +28,7 @@ struct ContentView: View {
     @State private var backupShareURL: URL?
     @State private var backupErrorMessage: String?
     @State private var showingBackupError = false
+    @State private var isCreatingBackup = false
     @State private var bookPendingDelete: Book?
 
     private var visibleBooks: [Book] {
@@ -125,6 +126,13 @@ struct ContentView: View {
             .toolbar(.hidden, for: .navigationBar)
             .onAppear { scanner.startScan() }
             .onDisappear { scanner.stopScan() }
+            .onChange(of: showingSync) { _, isPresented in
+                if isPresented {
+                    scanner.stopScan()
+                } else if !isCreatingBackup {
+                    scanner.startScan()
+                }
+            }
         }
         .environment(sync)
         .sheet(isPresented: $showingSync) {
@@ -209,11 +217,21 @@ struct ContentView: View {
     }
 
     private func runBackup() async {
+        guard !isCreatingBackup else { return }
+        isCreatingBackup = true
+        // A library backup does not need Bluetooth. Stop the passive scanner
+        // for the entire archive operation so it cannot compete with audio
+        // accessories on radios that have poor coexistence behaviour.
+        scanner.stopScan()
+        defer {
+            isCreatingBackup = false
+            if !showingSync { scanner.startScan() }
+        }
         do {
-            // The zip work walks Documents/Books which can be hundreds of
-            // MB — push it off the main actor's render path so the menu
-            // dismissal animation stays smooth.
-            let url = try await Task.detached { @MainActor in
+            // The zip work walks Documents/Books which can be hundreds of MB.
+            // Keep file coordination, copying, and compression off the main
+            // actor so the UI and CoreBluetooth delegate queue stay responsive.
+            let url = try await Task.detached(priority: .utility) {
                 try LibraryBackup.createBackupArchive()
             }.value
             backupShareURL = url
@@ -236,7 +254,11 @@ struct ContentView: View {
                 } label: { Label("Highlights", systemImage: "highlighter") }
                 Button {
                     Task { await runBackup() }
-                } label: { Label("Back up library", systemImage: "archivebox") }
+                } label: {
+                    Label(isCreatingBackup ? "Preparing backup…" : "Back up library",
+                          systemImage: "archivebox")
+                }
+                .disabled(isCreatingBackup)
                 Divider()
                 Button {
                     showingDiagnostics = true

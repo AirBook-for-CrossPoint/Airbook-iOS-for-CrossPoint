@@ -85,6 +85,7 @@ struct SyncDiagnosticsView: View {
             VStack(alignment: .leading, spacing: 4) {
                 label("LAST SYNC")
                 row(key: "Files sent", value: "\(summary.uploaded)")
+                row(key: "Duplicates skipped", value: "\(summary.duplicatesSkipped)")
                 row(key: "Entries removed", value: "\(summary.entriesRemoved)")
                 row(key: "Files freed", value: "\(summary.filesRemoved)")
                 row(key: "Progress merged", value: "\(summary.progressMerged)")

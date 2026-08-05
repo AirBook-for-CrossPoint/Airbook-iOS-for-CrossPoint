@@ -43,7 +43,7 @@ extension BookStore {
                 return .uploading(progress: entry.progress)
             case .willUpload:
                 return .queuedForUpload
-            case .uploaded:
+            case .uploaded, .alreadyPresent:
                 return .syncedFull
             case .willDeleteEntry, .deletingEntry, .entryDeleted:
                 return .queuedForEntryDeletion

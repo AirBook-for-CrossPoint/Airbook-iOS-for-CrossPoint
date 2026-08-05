@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import Network
 import Security
 
 // MARK: - Models
@@ -88,6 +89,59 @@ enum ZLibError: LocalizedError {
         case .downloadFailed(let m): return "Download failed: \(m)"
         }
     }
+}
+
+enum ZLibDNSMode: String, CaseIterable, Identifiable {
+    case system
+    case cloudflareHTTPS
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .system: return "System"
+        case .cloudflareHTTPS: return "Encrypted"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .system:
+            return "Uses the iPhone, Wi-Fi, VPN, or carrier DNS resolver."
+        case .cloudflareHTTPS:
+            return "Asks iOS to resolve this app's hostnames through Cloudflare DNS-over-HTTPS."
+        }
+    }
+}
+
+enum ZLibDiagnosticStatus: String, Equatable {
+    case info
+    case ok
+    case warning
+    case failed
+
+    var symbolName: String {
+        switch self {
+        case .info: return "info.circle"
+        case .ok: return "checkmark.circle"
+        case .warning: return "exclamationmark.triangle"
+        case .failed: return "xmark.circle"
+        }
+    }
+}
+
+struct ZLibDiagnosticStep: Identifiable, Equatable {
+    let id = UUID()
+    let status: ZLibDiagnosticStatus
+    let title: String
+    let detail: String
+}
+
+struct ZLibDiagnosticReport: Equatable {
+    let generatedAt: Date
+    let domain: String
+    let dnsMode: ZLibDNSMode
+    let steps: [ZLibDiagnosticStep]
 }
 
 // MARK: - Tiny Keychain helper
@@ -181,6 +235,7 @@ final class ZLibService {
     // MARK: - Public observable state
 
     var domain: String = "https://z-lib.sk"
+    var dnsMode: ZLibDNSMode = .system
     var isLoggedIn: Bool = false
     var savedEmail: String = ""
     var limits: ZLibLimits?
@@ -192,21 +247,46 @@ final class ZLibService {
 
     // MARK: - Private
 
-    @ObservationIgnored private let session: URLSession
+    @ObservationIgnored private var session: URLSession
     @ObservationIgnored private static let userAgent =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
     @ObservationIgnored private let defaults = UserDefaults.standard
     @ObservationIgnored private let emailKey = "zlib.email"
+    @ObservationIgnored private let domainKey = "zlib.domain"
+    @ObservationIgnored private let dnsModeKey = "zlib.dnsMode"
     @ObservationIgnored private let passwordAccount = "zlib.password"
 
     // MARK: - Init
 
     init() {
+        self.session = Self.makeSession()
+        if let savedDomain = defaults.string(forKey: domainKey) {
+            domain = Self.normalizedDomain(savedDomain)
+        }
+        if let rawMode = defaults.string(forKey: dnsModeKey),
+           let savedMode = ZLibDNSMode(rawValue: rawMode) {
+            dnsMode = savedMode
+        }
+        Self.applyDNSPolicy(dnsMode)
+
+        if let saved = defaults.string(forKey: emailKey) {
+            savedEmail = saved
+        }
+        refreshLoginState()
+    }
+
+    private static func makeSession() -> URLSession {
+        let config = makeSessionConfiguration()
+        return URLSession(configuration: config)
+    }
+
+    private static func makeSessionConfiguration(requestTimeout: TimeInterval = 60,
+                                                 resourceTimeout: TimeInterval = 180) -> URLSessionConfiguration {
         let config = URLSessionConfiguration.default
         config.httpCookieStorage = .shared
         config.httpCookieAcceptPolicy = .always
-        config.timeoutIntervalForRequest = 60
-        config.timeoutIntervalForResource = 180
+        config.timeoutIntervalForRequest = requestTimeout
+        config.timeoutIntervalForResource = resourceTimeout
         // Set User-Agent at session level so EVERY request (including cover
         // images via fetchImageData) looks browser-like. Without it z-lib's
         // CDN frequently 403s thumbnail requests.
@@ -220,12 +300,58 @@ final class ZLibService {
             "Sec-Fetch-User": "?1",
             "Upgrade-Insecure-Requests": "1"
         ]
-        self.session = URLSession(configuration: config)
+        return config
+    }
 
-        if let saved = defaults.string(forKey: emailKey) {
-            savedEmail = saved
+    private static func applyDNSPolicy(_ mode: ZLibDNSMode) {
+        switch mode {
+        case .system:
+            NWParameters.PrivacyContext.default.requireEncryptedNameResolution(false, fallbackResolver: nil)
+        case .cloudflareHTTPS:
+            guard let dohURL = URL(string: "https://cloudflare-dns.com/dns-query") else { return }
+            let addresses: [NWEndpoint] = [
+                .hostPort(host: "1.1.1.1", port: 443),
+                .hostPort(host: "1.0.0.1", port: 443)
+            ]
+            NWParameters.PrivacyContext.default.requireEncryptedNameResolution(
+                true,
+                fallbackResolver: .https(dohURL, serverAddresses: addresses))
         }
+    }
+
+    func setDomain(_ rawValue: String) {
+        let normalized = Self.normalizedDomain(rawValue)
+        guard !normalized.isEmpty, normalized != domain else { return }
+        domain = normalized
+        defaults.set(normalized, forKey: domainKey)
+        logout()
         refreshLoginState()
+    }
+
+    func setDNSMode(_ mode: ZLibDNSMode) {
+        guard mode != dnsMode else { return }
+        dnsMode = mode
+        defaults.set(mode.rawValue, forKey: dnsModeKey)
+        Self.applyDNSPolicy(mode)
+        session.invalidateAndCancel()
+        session = Self.makeSession()
+    }
+
+    private func prepareNetworkPolicy() {
+        Self.applyDNSPolicy(dnsMode)
+    }
+
+    private static func normalizedDomain(_ rawValue: String) -> String {
+        var value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        while value.hasSuffix("/") {
+            value.removeLast()
+        }
+        if value.isEmpty { return "" }
+        if !value.lowercased().hasPrefix("http://") &&
+            !value.lowercased().hasPrefix("https://") {
+            value = "https://" + value
+        }
+        return value
     }
 
     // MARK: - Credential persistence
@@ -257,6 +383,7 @@ final class ZLibService {
     // MARK: - Login
 
     func login(email: String, password: String, remember: Bool = true) async throws {
+        prepareNetworkPolicy()
         guard let url = URL(string: domain + "/rpc.php") else {
             throw ZLibError.network("Bad domain")
         }
@@ -281,7 +408,7 @@ final class ZLibService {
         do {
             (data, response) = try await session.data(for: req)
         } catch {
-            throw ZLibError.network(error.localizedDescription)
+            throw ZLibError.network(Self.describeNetworkError(error, url: url))
         }
 
         // The login response is JSON. Two shapes:
@@ -316,6 +443,157 @@ final class ZLibService {
         }
         isLoggedIn = false
         limits = nil
+    }
+
+    // MARK: - Network diagnostics
+
+    func runConnectivityDiagnostic() async -> ZLibDiagnosticReport {
+        prepareNetworkPolicy()
+        let checkedDomain = domain
+        var steps: [ZLibDiagnosticStep] = [
+            ZLibDiagnosticStep(
+                status: .info,
+                title: "Endpoint",
+                detail: "\(checkedDomain) using \(dnsMode.label) DNS. \(dnsMode.detail)")
+        ]
+
+        guard let baseURL = URL(string: checkedDomain),
+              let host = baseURL.host,
+              let rpcURL = URL(string: checkedDomain + "/rpc.php") else {
+            steps.append(ZLibDiagnosticStep(
+                status: .failed,
+                title: "Domain format",
+                detail: "The endpoint is not a valid URL. Use a full HTTPS domain."))
+            return ZLibDiagnosticReport(generatedAt: Date(),
+                                        domain: checkedDomain,
+                                        dnsMode: dnsMode,
+                                        steps: steps)
+        }
+
+        steps.append(await cloudflareDoHProbe(host: host))
+        steps.append(await rpcProbe(url: rpcURL))
+
+        return ZLibDiagnosticReport(generatedAt: Date(),
+                                    domain: checkedDomain,
+                                    dnsMode: dnsMode,
+                                    steps: steps)
+    }
+
+    private func cloudflareDoHProbe(host: String) async -> ZLibDiagnosticStep {
+        guard var comps = URLComponents(string: "https://cloudflare-dns.com/dns-query") else {
+            return ZLibDiagnosticStep(status: .failed,
+                                      title: "Cloudflare DoH",
+                                      detail: "Could not build the DNS-over-HTTPS test URL.")
+        }
+        comps.queryItems = [
+            URLQueryItem(name: "name", value: host),
+            URLQueryItem(name: "type", value: "A")
+        ]
+        guard let url = comps.url else {
+            return ZLibDiagnosticStep(status: .failed,
+                                      title: "Cloudflare DoH",
+                                      detail: "Could not encode the hostname for DNS-over-HTTPS.")
+        }
+
+        var request = URLRequest(url: url)
+        request.setValue("application/dns-json", forHTTPHeaderField: "Accept")
+        let session = URLSession(configuration: Self.makeSessionConfiguration(requestTimeout: 12,
+                                                                              resourceTimeout: 20))
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                return ZLibDiagnosticStep(status: .failed,
+                                          title: "Cloudflare DoH",
+                                          detail: "No HTTP response from the DNS resolver.")
+            }
+            guard (200...299).contains(http.statusCode) else {
+                return ZLibDiagnosticStep(status: .failed,
+                                          title: "Cloudflare DoH",
+                                          detail: "Resolver HTTP \(http.statusCode).")
+            }
+            let decoded = try JSONDecoder().decode(DoHJSONResponse.self, from: data)
+            let answers = (decoded.answer ?? [])
+                .filter { $0.type == 1 }
+                .map(\.data)
+            if decoded.status == 0, !answers.isEmpty {
+                return ZLibDiagnosticStep(status: .ok,
+                                          title: "Cloudflare DoH",
+                                          detail: "\(host) resolves to \(answers.joined(separator: ", ")).")
+            }
+            return ZLibDiagnosticStep(status: .warning,
+                                      title: "Cloudflare DoH",
+                                      detail: "Resolver answered status \(decoded.status), but no A record was returned.")
+        } catch {
+            return ZLibDiagnosticStep(status: .failed,
+                                      title: "Cloudflare DoH",
+                                      detail: Self.describeNetworkError(error, url: url))
+        }
+    }
+
+    private func rpcProbe(url: URL) async -> ZLibDiagnosticStep {
+        var request = URLRequest(url: url)
+        request.httpMethod = "HEAD"
+        request.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
+        let session = URLSession(configuration: Self.makeSessionConfiguration(requestTimeout: 15,
+                                                                              resourceTimeout: 20))
+        do {
+            let (_, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                return ZLibDiagnosticStep(status: .failed,
+                                          title: "App HTTP probe",
+                                          detail: "No HTTP response from \(url.host ?? "host").")
+            }
+            if (200...399).contains(http.statusCode) {
+                return ZLibDiagnosticStep(status: .ok,
+                                          title: "App HTTP probe",
+                                          detail: "\(url.lastPathComponent) returned HTTP \(http.statusCode). The app can reach the endpoint.")
+            }
+            return ZLibDiagnosticStep(status: .warning,
+                                      title: "App HTTP probe",
+                                      detail: "\(url.lastPathComponent) returned HTTP \(http.statusCode). DNS worked, but the endpoint may reject this request.")
+        } catch {
+            return ZLibDiagnosticStep(status: .failed,
+                                      title: "App HTTP probe",
+                                      detail: Self.describeNetworkError(error, url: url))
+        }
+    }
+
+    private struct DoHJSONResponse: Decodable {
+        let status: Int
+        let answer: [DoHJSONAnswer]?
+
+        enum CodingKeys: String, CodingKey {
+            case status = "Status"
+            case answer = "Answer"
+        }
+    }
+
+    private struct DoHJSONAnswer: Decodable {
+        let type: Int
+        let data: String
+    }
+
+    private static func describeNetworkError(_ error: Error, url: URL?) -> String {
+        guard let urlError = error as? URLError else {
+            return error.localizedDescription
+        }
+        let host = url?.host ?? "host"
+        switch urlError.code {
+        case .cannotFindHost:
+            return "DNS failed for \(host). Try Encrypted DNS in Network debug."
+        case .notConnectedToInternet:
+            return "The device is offline."
+        case .timedOut:
+            return "Connection to \(host) timed out."
+        case .cannotConnectToHost:
+            return "\(host) resolved, but the connection was refused or blocked."
+        case .secureConnectionFailed, .serverCertificateUntrusted,
+                .serverCertificateHasBadDate, .serverCertificateNotYetValid,
+                .serverCertificateHasUnknownRoot:
+            return "TLS/certificate failed for \(host): \(urlError.localizedDescription)"
+        default:
+            return urlError.localizedDescription
+        }
     }
 
     // MARK: - Search

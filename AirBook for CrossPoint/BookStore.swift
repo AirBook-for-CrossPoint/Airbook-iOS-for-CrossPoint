@@ -128,8 +128,9 @@ class BookStore {
 
     static let supportedExtensions = Set(["epub", "txt", "bmp", "xtc", "xtch"])
 
-    init() {
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+    init(documentsDirectory: URL? = nil) {
+        let docs = documentsDirectory
+            ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         booksDir = docs.appendingPathComponent("Books", isDirectory: true)
         coversDir = docs.appendingPathComponent("Covers", isDirectory: true)
         metaURL = docs.appendingPathComponent("books_meta.json")

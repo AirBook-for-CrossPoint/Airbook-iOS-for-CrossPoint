@@ -24,27 +24,25 @@ enum LibraryBackupError: Error, LocalizedError {
     }
 }
 
-@MainActor
 enum LibraryBackup {
-    /// Whitelist of Documents subdirectories that go into the backup. Skips
-    /// `metadata_cache/` (regenerable, large), `DeviceFiles/`, `zlib_download/`,
-    /// the OTA staging files, etc.
-    private static let foldersToInclude = ["Books", "BookState", "Covers"]
-    /// JSON manifests that live at the Documents root.
-    private static let filesToInclude = ["books_meta.json", "collections.json",
-                                          "opds_servers.json"]
-
     /// Stage the library into a temp dir → produce a .zip → return its URL.
     /// The returned URL points at a file in NSTemporaryDirectory; the
     /// caller is responsible for sharing it before another backup overwrites
     /// the same path.
-    static func createBackupArchive() throws -> URL {
+    nonisolated static func createBackupArchive() throws -> URL {
         let fm = FileManager.default
         let docs = fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        // Whitelist user-owned library data. Caches, downloads, device-file
+        // exports, and OTA staging files are intentionally regenerable.
+        let foldersToInclude = ["Books", "BookState", "Covers"]
+        let filesToInclude = ["books_meta.json", "collections.json",
+                              "opds_servers.json", "device_state.json"]
 
         // Use a per-invocation staging dir so two backups in flight don't
         // collide. The dir gets removed on the way out.
-        let datestamp = ISO8601DateFormatter.dateOnly.string(from: Date())
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withYear, .withMonth, .withDay, .withDashSeparatorInDate]
+        let datestamp = formatter.string(from: Date())
         let stageRoot = fm.temporaryDirectory
             .appendingPathComponent("AirBookBackup-\(datestamp)-\(UUID().uuidString.prefix(8))",
                                     isDirectory: true)
@@ -55,6 +53,7 @@ enum LibraryBackup {
         } catch {
             throw LibraryBackupError.stagingFailed(error.localizedDescription)
         }
+        defer { try? fm.removeItem(at: stageRoot) }
 
         // Drop a tiny README so a curious user opening the zip understands
         // what each folder is.
@@ -69,19 +68,27 @@ enum LibraryBackup {
         collections.json   — collection tags
         opds_servers.json  — OPDS servers configured in the app
         """
-        try? readme.data(using: .utf8)?.write(to: stage.appendingPathComponent("README.txt"))
-
-        for folder in foldersToInclude {
-            let src = docs.appendingPathComponent(folder)
-            guard fm.fileExists(atPath: src.path) else { continue }
-            let dst = stage.appendingPathComponent(folder)
-            try? fm.copyItem(at: src, to: dst)
+        do {
+            try readme.data(using: .utf8)?.write(to: stage.appendingPathComponent("README.txt"))
+        } catch {
+            throw LibraryBackupError.stagingFailed(error.localizedDescription)
         }
-        for file in filesToInclude {
-            let src = docs.appendingPathComponent(file)
-            guard fm.fileExists(atPath: src.path) else { continue }
-            let dst = stage.appendingPathComponent(file)
-            try? fm.copyItem(at: src, to: dst)
+
+        do {
+            for folder in foldersToInclude {
+                let src = docs.appendingPathComponent(folder)
+                guard fm.fileExists(atPath: src.path) else { continue }
+                let dst = stage.appendingPathComponent(folder)
+                try fm.copyItem(at: src, to: dst)
+            }
+            for file in filesToInclude {
+                let src = docs.appendingPathComponent(file)
+                guard fm.fileExists(atPath: src.path) else { continue }
+                let dst = stage.appendingPathComponent(file)
+                try fm.copyItem(at: src, to: dst)
+            }
+        } catch {
+            throw LibraryBackupError.stagingFailed(error.localizedDescription)
         }
 
         // NSFileCoordinator's .forUploading reading option produces a zip
@@ -103,9 +110,6 @@ enum LibraryBackup {
                 producedURL = nil
             }
         }
-        // Drop the staging copy whether we succeeded or not — it's heavy.
-        try? fm.removeItem(at: stageRoot)
-
         if let coordError {
             throw LibraryBackupError.zipFailed(coordError.localizedDescription)
         }
@@ -114,12 +118,4 @@ enum LibraryBackup {
         }
         return url
     }
-}
-
-private extension ISO8601DateFormatter {
-    static let dateOnly: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withYear, .withMonth, .withDay, .withDashSeparatorInDate]
-        return f
-    }()
 }

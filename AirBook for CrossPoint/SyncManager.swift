@@ -77,6 +77,7 @@ enum SyncPhase: Equatable {
 
 struct SyncSummary: Equatable {
     var uploaded: Int = 0
+    var duplicatesSkipped: Int = 0
     var entriesRemoved: Int = 0
     var filesRemoved: Int = 0
     var progressMerged: Int = 0
@@ -84,7 +85,7 @@ struct SyncSummary: Equatable {
     var highlightsMerged: Int = 0
 
     var hasChanges: Bool {
-        uploaded > 0 || entriesRemoved > 0 || filesRemoved > 0 ||
+        uploaded > 0 || duplicatesSkipped > 0 || entriesRemoved > 0 || filesRemoved > 0 ||
         progressMerged > 0 || bookmarksMerged > 0 || highlightsMerged > 0
     }
 
@@ -92,6 +93,7 @@ struct SyncSummary: Equatable {
         guard hasChanges else { return "Already in sync" }
         var parts: [String] = []
         if uploaded > 0          { parts.append("+\(uploaded) sent") }
+        if duplicatesSkipped > 0 { parts.append("\(duplicatesSkipped) already there") }
         if entriesRemoved > 0    { parts.append("−\(entriesRemoved) removed") }
         if filesRemoved > 0      { parts.append("\(filesRemoved) freed") }
         if progressMerged > 0    { parts.append("\(progressMerged) progress") }
@@ -145,6 +147,7 @@ struct SyncBookEntry: Identifiable, Equatable {
         case willUpload
         case uploading
         case uploaded
+        case alreadyPresent
         case willDeleteEntry
         case deletingEntry
         case entryDeleted
@@ -203,6 +206,12 @@ final class SyncManager: NSObject {
     @ObservationIgnored private weak var store: BookStore?
     @ObservationIgnored private weak var readingStateStore: ReadingStateStore?
     @ObservationIgnored private var chunkSize: Int = 512
+    /// Keep the CoreBluetooth transmit queue shallow. Unbounded pumping can
+    /// monopolize the shared 2.4 GHz controller on some phones and cause
+    /// audible dropouts or reconnect loops on Bluetooth headphones.
+    @ObservationIgnored private let uploadBurstChunks = 2
+    @ObservationIgnored private let uploadInterBurstDelay: Duration = .milliseconds(15)
+    @ObservationIgnored private var uploadPumpScheduled = false
 
     // Negotiated protocol version. V2 path still works untouched, V3 unlocks
     // reading-state sync between LIST and the file-op plan.
@@ -228,6 +237,10 @@ final class SyncManager: NSObject {
     @ObservationIgnored private var phaseTotal: Int = 0
     @ObservationIgnored private var phaseDone: Int = 0
     @ObservationIgnored private var currentUploadOffset: Int = 0
+    /// False until the device asks us to stream bytes with READY. A direct
+    /// DONE_V2 response means firmware matched an existing device file and
+    /// adopted this UUID without re-sending the payload.
+    @ObservationIgnored private var currentUploadRequiredTransfer = false
     @ObservationIgnored private var summary = SyncSummary()
 
     // Overall upload progress so the SyncStatusHeader's bar reflects all
@@ -304,6 +317,8 @@ final class SyncManager: NSObject {
         phaseTotal = 0
         phaseDone = 0
         currentUploadOffset = 0
+        currentUploadRequiredTransfer = false
+        uploadPumpScheduled = false
         totalBytesPlanned = 0
         totalBytesCompleted = 0
         summary = SyncSummary()
@@ -453,6 +468,7 @@ final class SyncManager: NSObject {
                 rsSubPhase = .streamingHighlightBlob
                 pumpReadingStateBlob()
             default:
+                currentUploadRequiredTransfer = true
                 pumpUpload()
             }
             return
@@ -784,6 +800,7 @@ final class SyncManager: NSObject {
         }
         currentUploadData = data
         currentUploadOffset = 0
+        currentUploadRequiredTransfer = false
         // bytesTransferred/bytesTotal now drive the overall progress bar
         // (sum across all queued uploads), not the per-book progress. The
         // "1/N" counter still tracks individual books via current/total.
@@ -798,19 +815,39 @@ final class SyncManager: NSObject {
     }
 
     private func pumpUpload() {
-        guard !uploadQueue.isEmpty,
+        uploadPumpScheduled = false
+        guard currentUploadRequiredTransfer,
+              !uploadQueue.isEmpty,
               let data = currentUploadData,
               let p = peripheral,
               let dc = dataChar else { return }
         if currentUploadOffset < data.count && p.canSendWriteWithoutResponse {
             armOpWatchdog()  // outgoing bytes count as liveness too
         }
-        while currentUploadOffset < data.count && p.canSendWriteWithoutResponse {
+        var chunksSent = 0
+        while currentUploadOffset < data.count,
+              p.canSendWriteWithoutResponse,
+              chunksSent < uploadBurstChunks {
             let end = min(currentUploadOffset + chunkSize, data.count)
             p.writeValue(data.subdata(in: currentUploadOffset..<end),
                          for: dc, type: .withoutResponse)
             currentUploadOffset = end
+            chunksSent += 1
             updateUploadingProgress(done: Int64(end), total: Int64(data.count))
+        }
+        if currentUploadOffset < data.count, p.canSendWriteWithoutResponse {
+            scheduleUploadPump()
+        }
+    }
+
+    private func scheduleUploadPump() {
+        guard !uploadPumpScheduled else { return }
+        uploadPumpScheduled = true
+        let delay = uploadInterBurstDelay
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: delay)
+            guard let self else { return }
+            self.pumpUpload()
         }
     }
 
@@ -840,8 +877,13 @@ final class SyncManager: NSObject {
               uploadQueue[0].id == id else { return }
         let book = uploadQueue[0]
         store?.markUploaded(book)
-        markEntry(id: id, action: .uploaded)
-        summary.uploaded += 1
+        if currentUploadRequiredTransfer {
+            markEntry(id: id, action: .uploaded)
+            summary.uploaded += 1
+        } else {
+            markEntry(id: id, action: .alreadyPresent)
+            summary.duplicatesSkipped += 1
+        }
         // Roll the just-finished book's full byte count into the overall
         // total so the header bar doesn't snap backwards when the next
         // upload starts.
@@ -877,6 +919,8 @@ final class SyncManager: NSObject {
         uploadQueue.removeFirst()
         phaseDone += 1
         currentUploadOffset = 0
+        currentUploadRequiredTransfer = false
+        uploadPumpScheduled = false
         currentUploadData = nil
     }
 
@@ -1459,6 +1503,7 @@ final class SyncManager: NSObject {
         scanTimer?.invalidate(); scanTimer = nil
         discoveryTimer?.invalidate(); discoveryTimer = nil
         opTimer?.invalidate(); opTimer = nil
+        uploadPumpScheduled = false
         central?.stopScan()
         if let p = peripheral { central?.cancelPeripheralConnection(p) }
         central?.delegate = nil

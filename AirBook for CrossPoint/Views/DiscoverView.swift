@@ -478,6 +478,11 @@ private struct DiscoverLoginPanel: View {
     @State private var remember: Bool = true
     @State private var working: Bool = false
     @State private var errorMessage: String?
+    @State private var showingNetworkDebug: Bool = false
+    @State private var domainDraft: String = ""
+    @State private var selectedDNSMode: ZLibDNSMode = .system
+    @State private var diagnosticReport: ZLibDiagnosticReport?
+    @State private var diagnosticRunning: Bool = false
 
     var body: some View {
         ScrollView {
@@ -496,6 +501,8 @@ private struct DiscoverLoginPanel: View {
                         .foregroundStyle(Color.paperInk)
                 }
                 .tint(Color.paperInk)
+
+                networkDebugPanel
 
                 if let errorMessage {
                     Text(errorMessage)
@@ -531,6 +538,8 @@ private struct DiscoverLoginPanel: View {
         .onAppear {
             if email.isEmpty { email = service.savedEmail }
             if password.isEmpty, let stored = service.savedPassword { password = stored }
+            if domainDraft.isEmpty { domainDraft = service.domain }
+            selectedDNSMode = service.dnsMode
         }
     }
 
@@ -582,8 +591,96 @@ private struct DiscoverLoginPanel: View {
         }
     }
 
+    private var networkDebugPanel: some View {
+        DisclosureGroup(isExpanded: $showingNetworkDebug) {
+            VStack(alignment: .leading, spacing: 12) {
+                field(label: "Endpoint", text: $domainDraft,
+                      contentType: .URL, keyboard: .URL)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("DNS MODE")
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(Color.paperRule)
+                    Picker("DNS mode", selection: $selectedDNSMode) {
+                        ForEach(ZLibDNSMode.allCases) { mode in
+                            Text(mode.label).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: selectedDNSMode) { newValue in
+                        service.setDNSMode(newValue)
+                        diagnosticReport = nil
+                    }
+                    Text(selectedDNSMode.detail)
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(Color.paperRule)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Button {
+                    runNetworkDebug()
+                } label: {
+                    HStack(spacing: 8) {
+                        if diagnosticRunning { ProgressView().scaleEffect(0.7).tint(Color.paperInk) }
+                        Image(systemName: "network")
+                            .font(.system(size: 11, weight: .light))
+                        Text(diagnosticRunning ? "Testing network…" : "Run network debug")
+                    }
+                    .font(.system(.caption, design: .monospaced).weight(.medium))
+                    .foregroundStyle(Color.paperInk)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 9)
+                    .overlay(Rectangle().stroke(Color.paperInk, lineWidth: 0.6))
+                }
+                .disabled(diagnosticRunning)
+
+                if let diagnosticReport {
+                    diagnosticReportView(diagnosticReport)
+                }
+            }
+            .padding(.top, 10)
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "antenna.radiowaves.left.and.right")
+                    .font(.system(size: 12, weight: .light))
+                Text("Network debug")
+                    .font(.system(.caption, design: .monospaced).weight(.medium))
+            }
+            .foregroundStyle(Color.paperInk)
+        }
+        .tint(Color.paperInk)
+        .padding(.vertical, 4)
+    }
+
+    private func diagnosticReportView(_ report: ZLibDiagnosticReport) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Text("Last check · \(report.generatedAt.formatted(date: .omitted, time: .standard))")
+                .font(.system(.caption2, design: .monospaced))
+                .foregroundStyle(Color.paperRule)
+            ForEach(report.steps) { step in
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: step.status.symbolName)
+                        .font(.system(size: 11, weight: .light))
+                        .foregroundStyle(step.status == .failed ? Color.paperError : Color.paperInk)
+                        .frame(width: 14, height: 14)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(step.title)
+                            .font(.system(.caption2, design: .monospaced).weight(.bold))
+                            .foregroundStyle(Color.paperInk)
+                        Text(step.detail)
+                            .font(.system(.caption2, design: .monospaced))
+                            .foregroundStyle(step.status == .failed ? Color.paperError : Color.paperRule)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        }
+        .padding(.top, 2)
+    }
+
     private func submit() {
         errorMessage = nil
+        applyNetworkDebugSettings()
         working = true
         Task {
             do {
@@ -596,6 +693,25 @@ private struct DiscoverLoginPanel: View {
                 }
             }
         }
+    }
+
+    private func runNetworkDebug() {
+        applyNetworkDebugSettings()
+        diagnosticRunning = true
+        diagnosticReport = nil
+        Task {
+            let report = await service.runConnectivityDiagnostic()
+            await MainActor.run {
+                diagnosticReport = report
+                diagnosticRunning = false
+            }
+        }
+    }
+
+    private func applyNetworkDebugSettings() {
+        service.setDomain(domainDraft)
+        domainDraft = service.domain
+        service.setDNSMode(selectedDNSMode)
     }
 }
 

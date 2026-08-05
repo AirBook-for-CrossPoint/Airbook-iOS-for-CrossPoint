@@ -157,6 +157,14 @@ final class DeviceFileBrowser: NSObject {
         }
     }
 
+    /// Delete a single file on the device. The device replies BROWSE_DELETED
+    /// (handled in handleStatus, which reloads the current directory) or
+    /// BROWSE_ERROR. Directories are not deletable.
+    func delete(_ entry: DeviceFileEntry) {
+        guard !entry.isDirectory else { return }
+        writeControl("BROWSE_DELETE:\(entry.relativePath)")
+    }
+
     func close() {
         shutdown()
         phase = .idle
@@ -245,6 +253,12 @@ final class DeviceFileBrowser: NSObject {
         }
         if msg == "BROWSE_READ_DONE" {
             finishDownload()
+            return
+        }
+        if msg.hasPrefix("BROWSE_DELETED:") {
+            // The file is gone on the device — reload the current directory so
+            // the row drops out (and any duplicate ghost mappings clear).
+            loadDirectory(pendingPath)
             return
         }
         if msg.hasPrefix("BROWSE_ERROR:") {
@@ -419,10 +433,12 @@ extension DeviceFileBrowser: CBPeripheralDelegate {
         peripheral.setNotifyValue(true, for: sc)
         peripheral.setNotifyValue(true, for: fo)
         if let ic = infoChar { peripheral.readValue(for: ic) }
-        // BROWSE_LS works without a SYNC_START handshake — it's a
-        // standalone command on the firmware side. Start at the
-        // /AirBook root (empty relpath).
-        loadDirectory("")
+        // Do NOT send BROWSE_LS here. setNotifyValue is asynchronous, so the
+        // STATUS subscription isn't active yet. The device answers BROWSE_LS in
+        // ~13 ms (measured on-device), so its BROWSE_ENTRY notifications would
+        // fire before CoreBluetooth starts delivering them and be dropped —
+        // the "no files on the device" bug. Wait until STATUS notifications are
+        // actually on; see didUpdateNotificationStateFor.
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
@@ -454,5 +470,15 @@ extension DeviceFileBrowser: CBPeripheralDelegate {
     }
 
     func peripheral(_ peripheral: CBPeripheral,
-                    didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {}
+                    didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
+        // Fire the first BROWSE_LS only once STATUS notifications are actually
+        // enabled — otherwise the device's near-instant BROWSE_ENTRY replies
+        // are dropped before delivery starts ("no files on the device").
+        guard error == nil,
+              characteristic.uuid == kStatusUUID,
+              characteristic.isNotifying else { return }
+        if case .discovering = phase {
+            loadDirectory("")
+        }
+    }
 }

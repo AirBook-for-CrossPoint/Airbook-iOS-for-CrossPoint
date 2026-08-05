@@ -8,12 +8,26 @@ struct DeviceFilesView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var shareURL: URL?
+    @State private var pendingDelete: DeviceFileEntry?
 
     var body: some View {
         NavigationStack {
             ZStack {
                 Color.paperBackground.ignoresSafeArea()
                 content
+            }
+            .confirmationDialog(
+                pendingDelete.map { "Delete “\($0.name)” from the device?" } ?? "",
+                isPresented: Binding(
+                    get: { pendingDelete != nil },
+                    set: { if !$0 { pendingDelete = nil } }),
+                titleVisibility: .visible,
+                presenting: pendingDelete
+            ) { entry in
+                Button("Delete from device", role: .destructive) { browser.delete(entry) }
+                Button("Cancel", role: .cancel) {}
+            } message: { _ in
+                Text("This permanently removes the file from the CrossPoint’s SD card.")
             }
             .toolbar {
                 ToolbarItem(placement: .principal) {
@@ -175,6 +189,15 @@ struct DeviceFilesView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            if !entry.isDirectory {
+                Button(role: .destructive) {
+                    pendingDelete = entry
+                } label: {
+                    Label("Delete from device", systemImage: "trash")
+                }
+            }
+        }
     }
 
     private func iconName(for entry: DeviceFileEntry) -> String {

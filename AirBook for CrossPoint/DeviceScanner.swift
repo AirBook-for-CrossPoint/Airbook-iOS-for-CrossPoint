@@ -1,6 +1,8 @@
 import CoreBluetooth
 import Foundation
 
+private let airBookServiceUUID = CBUUID(string: "8b45f100-9128-4d4f-9a4f-7a0dc1b26b01")
+
 /// Lightweight passive BLE scanner used by the home screen to detect
 /// whether a CrossPoint device is advertising nearby. Re-probes every
 /// `rescanIntervalSeconds` while enabled so the status dot reflects the
@@ -79,7 +81,10 @@ final class DeviceScanner: NSObject {
 extension DeviceScanner: CBCentralManagerDelegate {
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         if central.state == .poweredOn {
-            central.scanForPeripherals(withServices: nil,
+            // Filter in the controller instead of scanning every nearby BLE
+            // advertiser (including headphones and watches). Current AirBook
+            // firmware puts this UUID in the primary advertisement.
+            central.scanForPeripherals(withServices: [airBookServiceUUID],
                                        options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
             scanTimeout = Timer.scheduledTimer(withTimeInterval: scanWindowSeconds,
                                                 repeats: false) { [weak self] _ in
@@ -92,10 +97,10 @@ extension DeviceScanner: CBCentralManagerDelegate {
 
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral,
                         advertisementData: [String: Any], rssi RSSI: NSNumber) {
-        if peripheral.name == "CrossPoint AirBook" {
-            isNearby = true
-            foundInCurrentCycle = true
-            endCycle()
-        }
+        // The service filter is the identity check. The full device name is
+        // carried in the scan response and may not have populated yet.
+        isNearby = true
+        foundInCurrentCycle = true
+        endCycle()
     }
 }

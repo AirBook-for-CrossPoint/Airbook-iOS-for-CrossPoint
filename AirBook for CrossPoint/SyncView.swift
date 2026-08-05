@@ -341,6 +341,10 @@ struct SyncBookRow: View {
             Image(systemName: "checkmark")
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(Color.paperInk)
+        case .alreadyPresent:
+            Image(systemName: "checkmark.circle")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(Color.paperInk)
         case .willDeleteEntry:
             Image(systemName: "minus")
                 .font(.system(size: 11, weight: .light))
@@ -387,6 +391,8 @@ struct SyncBookRow: View {
             label("\(Int(entry.progress * 100))%", color: Color.paperInk, monospacedDigit: true)
         case .uploaded:
             label("Sent", color: Color.paperInk)
+        case .alreadyPresent:
+            label("Already there", color: Color.paperInk)
         case .willDeleteEntry:
             label("Remove", color: Color.paperError)
         case .deletingEntry:
